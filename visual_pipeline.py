@@ -34,6 +34,7 @@ class VisualPipeline:
         
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
         self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
+        
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
             sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
             torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
@@ -47,6 +48,7 @@ class VisualPipeline:
             self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
             
         self.pipe.load_ip_adapter(os.path.join(ip_adapter_path, "models"), subfolder="", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
         
         self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
         
@@ -74,93 +76,131 @@ class VisualPipeline:
         output, _ = self.upscaler.enhance(frame_bgr, outscale=2)
         return cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
 
-    def get_person_mask(self, frame):
-        results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        return (results.segmentation_mask > 0.5).astype(np.uint8) * 255
-
     def match_skin_tone(self, target_img, source_img):
-        target_img = cv2.cvtColor(target_img, cv2.COLOR_RGB2LAB)
-        source_img = cv2.cvtColor(source_img, cv2.COLOR_RGB2LAB)
-        t_mean, t_std = cv2.meanStdDev(target_img)
-        s_mean, s_std = cv2.meanStdDev(source_img)
-        target_img = (target_img - t_mean.flatten()) * (s_std.flatten() / (t_std.flatten() + 1e-5)) + s_mean.flatten()
-        target_img = np.clip(target_img, 0, 255).astype(np.uint8)
-        return cv2.cvtColor(target_img, cv2.COLOR_LAB2RGB)
+        """Matches the skin tone and lighting of the target image to the source frame."""
+        # Convert to LAB color space (L=lightness, A=red/green, B=blue/yellow)
+        target_lab = cv2.cvtColor(target_img, cv2.COLOR_RGB2LAB).astype(np.float32)
+        source_lab = cv2.cvtColor(source_img, cv2.COLOR_RGB2LAB).astype(np.float32)
+        
+        # Calculate means and standard deviations
+        t_mean, t_std = cv2.meanStdDev(target_lab)
+        s_mean, s_std = cv2.meanStdDev(source_lab)
+        
+        # Color transfer formula
+        for i in range(3):
+            target_lab[:,:,i] = (target_lab[:,:,i] - t_mean[i]) * (s_std[i] / (t_std[i] + 1e-6)) + s_mean[i]
+            
+        target_lab = np.clip(target_lab, 0, 255).astype(np.uint8)
+        return cv2.cvtColor(target_lab, cv2.COLOR_LAB2RGB)
 
-    def get_identity_embeddings(self, identity_map_paths):
-        """Pre-calculates or loads reference embeddings for all characters."""
-        identity_map = {}
-        for name, paths in identity_map_paths.items():
-            identity_map[name] = {
-                'ref_images': [Image.open(p).convert("RGB").resize((224, 224)) for p in paths],
-                'ref_embeddings': paths # DeepFace uses paths
-            }
-        return identity_map
+    def get_face_embeddings(self, image_paths):
+        """Pre-calculates numerical embeddings for a set of images."""
+        embeddings = []
+        for path in image_paths:
+            try:
+                res = DeepFace.represent(path, model_name='VGG-Face', detector_backend='opencv', enforce_detection=False)
+                if res: embeddings.append(np.array(res[0]['embedding']))
+            except Exception as e:
+                logger.warning(f"Failed to extract embedding for {path}: {e}")
+        return embeddings
 
     def process_frame_multi(self, frame, identity_map, prompt_base, restore_face=True):
+        """
+        Replaces multiple characters using vector-based matching for speed.
+        identity_map: { 'Name': { 'images': [PIL], 'embeddings': [np.array] } }
+        """
         final_frame = frame.copy()
+        
+        # 1. Extract all faces and their embeddings from the current frame
         try:
-            faces = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
+            faces_data = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
         except: return frame
 
-        for face_data in faces:
-            face_img = face_data['face']
+        for face_data in faces_data:
+            face_img = (face_data['face'] * 255).astype(np.uint8)
             if face_img.size == 0: continue
+            
+            # 2. Get current face embedding
+            try:
+                res = DeepFace.represent(face_img, model_name='VGG-Face', detector_backend='skip', enforce_detection=False)
+                if not res: continue
+                curr_emb = np.array(res[0]['embedding'])
+            except: continue
+            
+            # 3. Find match in identity map using cosine similarity
             matched_id = None
+            best_dist = 0.4 # Threshold
+            
             for name, data in identity_map.items():
-                try:
-                    res = DeepFace.verify(face_img, data['ref_embeddings'][0], detector_backend='skip', enforce_detection=False)
-                    if res['verified']:
-                        matched_id = name; break
-                except: continue
+                for lib_emb in data['embeddings']:
+                    dist = 1 - (np.dot(curr_emb, lib_emb) / (np.linalg.norm(curr_emb) * np.linalg.norm(lib_emb)))
+                    if dist < best_dist:
+                        best_dist = dist
+                        matched_id = name
+                        break
             
             if matched_id:
+                # 4. Perform transformation
                 pil_frame = Image.fromarray(frame).resize((512, 512))
                 canny_image = self.get_canny_image(pil_frame)
                 num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
-                self.pipe.set_ip_adapter_scale(0.7)
+                
                 output = self.pipe(
-                    prompt=f"{prompt_base}, {matched_id}", image=pil_frame, 
-                    ip_adapter_image=identity_map[matched_id]['ref_images'], 
+                    prompt=f"{prompt_base}, {matched_id}", 
+                    image=pil_frame, 
+                    ip_adapter_image=identity_map[matched_id]['images'], 
                     control_image=canny_image,
                     strength=CONFIG.get('defaults', {}).get('sd_strength', 0.6), 
-                    num_inference_steps=num_steps, guidance_scale=1.0 if self.use_lcm else 7.5
+                    num_inference_steps=num_steps
                 ).images[0]
                 
-                transformed_person = np.array(output.resize((frame.shape[1], frame.shape[0])))
-                transformed_person = self.match_skin_tone(transformed_person, frame)
+                transformed_full = np.array(output.resize((frame.shape[1], frame.shape[0])))
                 
-                mask = self.get_person_mask(frame)
+                # 5. High-quality blending
+                transformed_matched = self.match_skin_tone(transformed_full, frame)
+                
+                results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
                 mask_norm = cv2.GaussianBlur(mask, (15, 15), 0).astype(float) / 255.0
                 if mask_norm.ndim == 2: mask_norm = np.stack([mask_norm]*3, axis=-1)
-                final_frame = (transformed_person.astype(float) * mask_norm + final_frame.astype(float) * (1.0 - mask_norm)).astype(np.uint8)
+                
+                final_frame = (transformed_matched.astype(float) * mask_norm + final_frame.astype(float) * (1.0 - mask_norm)).astype(np.uint8)
 
         if restore_face: final_frame = self.restore_faces(final_frame)
         return final_frame
 
     def process_video_multi(self, video_path, identity_map_paths, output_video_path, prompt="a person", restore_face=True, upscale=False):
-        logger.info(f"Processing multi-character video {video_path}...")
-        identity_map = self.get_identity_embeddings(identity_map_paths)
-        clip = mp.VideoFileClip(video_path)
-        fps = clip.fps; width, height = clip.size
-        out_w, out_h = (width * 2, height * 2) if upscale else (width, height)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        temp_out = "temp_multi_visual.mp4"
-        out = cv2.VideoWriter(temp_out, fourcc, fps, (out_w, out_h))
+        logger.info(f"Processing multi-character video {video_path} with high-speed matching...")
         
+        # Pre-calculate all reference embeddings once
+        identity_map = {}
+        for name, paths in identity_map_paths.items():
+            identity_map[name] = {
+                'images': [Image.open(p).convert("RGB").resize((224, 224)) for p in paths],
+                'embeddings': self.get_face_embeddings(paths)
+            }
+
+        clip = mp.VideoFileClip(video_path)
+        fps = clip.fps; out_w, out_h = (clip.w * 2, clip.h * 2) if upscale else (clip.w, clip.h)
+        
+        out = cv2.VideoWriter("temp_streaming.mp4", cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
+        
+        # Test segment
         test_duration = min(clip.duration, 0.5); count = 0
         try:
             for frame in clip.iter_frames():
                 if count / fps > test_duration: break
+                
                 transformed = self.process_frame_multi(frame, identity_map, prompt, restore_face=restore_face)
                 if upscale: transformed = self.upscale_frame(transformed)
+                
                 out.write(cv2.cvtColor(transformed, cv2.COLOR_RGB2BGR))
                 count += 1
         finally:
             out.release(); clip.close()
             
         if os.path.exists(output_video_path): os.remove(output_video_path)
-        os.rename(temp_out, output_video_path)
+        os.rename("temp_streaming.mp4", output_video_path)
         return output_video_path
 
 if __name__ == "__main__":
