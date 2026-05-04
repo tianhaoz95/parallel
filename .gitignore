@@ -9,4 +9,6 @@ samples/
 *.onnx
 *.safetensors
 transformed_output.mp4
+gfpgan/
+separated/
 temp_*
