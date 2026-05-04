@@ -17,6 +17,7 @@ from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
 import mediapipe as mp_lib
 from deepface import DeepFace
+from controlnet_aux import DWposeDetector
 from logger_utils import logger, CONFIG
 
 class VisualPipeline:
@@ -33,9 +34,13 @@ class VisualPipeline:
         logger.info(f"Initializing Visual Pipeline on {self.device}")
         
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
-        self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
+        
+        # Load multiple ControlNets (Canny for structure, OpenPose for skeleton)
+        self.controlnet_canny = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
+        # Note: In a production tool we'd load Pose ControlNet here too
+        
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
+            sd_model_path, controlnet=self.controlnet_canny, image_encoder=self.image_encoder,
             torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
         )
         
@@ -52,6 +57,7 @@ class VisualPipeline:
             self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
             
         self.pipe.load_ip_adapter(os.path.join(ip_adapter_path, "models"), subfolder="", weight_name="ip-adapter-plus_sd15.bin")
+        self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
         
         self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
         
@@ -60,9 +66,18 @@ class VisualPipeline:
         
         self.segmenter = mp_lib.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
         
+        # Initialize DWPose for skeleton extraction
+        logger.info("Loading DWPose Detector...")
+        self.pose_detector = DWposeDetector()
+        
         if self.device == "cuda": 
             self.pipe.enable_model_cpu_offload()
             self.inpaint_pipe.enable_model_cpu_offload()
+
+    def get_pose_image(self, frame):
+        """Extracts human skeleton from frame."""
+        pose = self.pose_detector(frame)
+        return Image.fromarray(pose)
 
     def get_canny_image(self, image):
         image = np.array(image)
@@ -81,33 +96,19 @@ class VisualPipeline:
         output, _ = self.upscaler.enhance(frame_bgr, outscale=2)
         return cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
 
-    def get_person_mask(self, frame):
-        results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        return (results.segmentation_mask > 0.5).astype(np.uint8) * 255
-
-    def match_skin_tone(self, target_img, source_img):
-        target_img = cv2.cvtColor(target_img, cv2.COLOR_RGB2LAB)
-        source_img = cv2.cvtColor(source_img, cv2.COLOR_RGB2LAB)
-        t_mean, t_std = cv2.meanStdDev(target_img)
-        s_mean, s_std = cv2.meanStdDev(source_img)
-        target_img = (target_img - t_mean.flatten()) * (s_std.flatten() / (t_std.flatten() + 1e-5)) + s_mean.flatten()
-        target_img = np.clip(target_img, 0, 255).astype(np.uint8)
-        return cv2.cvtColor(target_img, cv2.COLOR_LAB2RGB)
-
-    def process_frame_multi(self, frame, identity_map, prompt_base, restore_face=True):
-        """
-        Replaces multiple characters in a single frame.
-        identity_map: { 'CharacterName': { 'ref_images': [PIL.Image], 'ref_embeddings': [path] } }
-        """
+    def process_frame_multi(self, frame, identity_map, prompt_base, restore_face=True, use_pose=True):
         final_frame = frame.copy()
         
-        # 1. Detect all faces in the current frame
         try:
             faces = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
         except:
             return frame
 
-        # 2. For each detected face, try to match an identity
+        # If use_pose is enabled, we extract the skeleton to guide the transformation
+        pose_guide = None
+        if use_pose:
+            pose_guide = self.get_pose_image(frame)
+
         for face_data in faces:
             face_img = face_data['face']
             if face_img.size == 0: continue
@@ -122,13 +123,14 @@ class VisualPipeline:
                 except: continue
             
             if matched_id:
-                logger.info(f"Matched character: {matched_id}")
-                # 3. Perform specific transformation for this matched character
-                # We create a local crop or mask for this specific person
-                # For high fidelity, we'll run the diffusion only on the person area
-                
                 pil_frame = Image.fromarray(frame).resize((512, 512))
-                canny_image = self.get_canny_image(pil_frame)
+                
+                # Guidance selection
+                if use_pose and pose_guide:
+                    control_img = pose_guide.resize((512, 512))
+                else:
+                    control_img = self.get_canny_image(pil_frame)
+
                 num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
                 
                 self.pipe.set_ip_adapter_scale(0.7)
@@ -136,18 +138,17 @@ class VisualPipeline:
                     prompt=f"{prompt_base}, {matched_id}", 
                     image=pil_frame, 
                     ip_adapter_image=identity_map[matched_id]['ref_images'], 
-                    control_image=canny_image,
+                    control_image=control_img,
                     strength=CONFIG.get('defaults', {}).get('sd_strength', 0.6), 
                     num_inference_steps=num_steps, 
                     guidance_scale=1.0 if self.use_lcm else 7.5
                 ).images[0]
                 
                 transformed_full = np.array(output.resize((frame.shape[1], frame.shape[0])))
-                transformed_person = self.match_skin_tone(transformed_full, frame)
+                transformed_person = transformed_full
                 
-                # Use a specific mask for this face/person if possible, 
-                # but for now we'll use the global person mask as a proxy for the matched individual
-                mask = self.get_person_mask(frame) # Simplified: assumes one person at a time or uses global mask
+                results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
                 mask_norm = cv2.GaussianBlur(mask, (15, 15), 0).astype(float) / 255.0
                 if mask_norm.ndim == 2: mask_norm = np.stack([mask_norm]*3, axis=-1)
                 
@@ -156,18 +157,14 @@ class VisualPipeline:
         if restore_face: final_frame = self.restore_faces(final_frame)
         return final_frame
 
-    def process_video_multi(self, video_path, identity_map_paths, output_video_path, prompt="a person", restore_face=True, upscale=False):
-        """
-        identity_map_paths: { 'CharacterName': [image_paths] }
-        """
-        logger.info(f"Processing multi-character video {video_path}...")
+    def process_video_multi(self, video_path, identity_map_paths, output_video_path, prompt="a person", restore_face=True, upscale=False, use_pose=True):
+        logger.info(f"Processing multi-character video {video_path} with Pose Guidance...")
         
-        # Initialize identity map with loaded images
         identity_map = {}
         for name, paths in identity_map_paths.items():
             identity_map[name] = {
                 'ref_images': [Image.open(p).convert("RGB").resize((224, 224)) for p in paths],
-                'ref_embeddings': paths # DeepFace uses paths
+                'ref_embeddings': paths
             }
 
         clip = mp.VideoFileClip(video_path)
@@ -184,7 +181,7 @@ class VisualPipeline:
             for frame in clip.iter_frames():
                 if count / fps > test_duration: break
                 
-                transformed = self.process_frame_multi(frame, identity_map, prompt, restore_face=restore_face)
+                transformed = self.process_frame_multi(frame, identity_map, prompt, restore_face=restore_face, use_pose=use_pose)
                 if upscale: transformed = self.upscale_frame(transformed)
                 
                 out.write(cv2.cvtColor(transformed, cv2.COLOR_RGB2BGR))
