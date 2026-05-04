@@ -32,10 +32,10 @@ def main():
     # 1. Audio Processing
     logger.info("Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning)")
     audio_pipe = AudioPipeline(
-        asr_model_path="models/faster-whisper-small",
-        translation_model_path=f"models/opus-mt-en-{args.target_lang}",
-        tts_model_path="models/Kokoro-82M/kokoro-v1.0.onnx",
-        tts_voices_path="models/Kokoro-82M/voices.bin"
+        asr_model_path=CONFIG.get('models', {}).get('asr'),
+        translation_model_path_prefix=CONFIG.get('models', {}).get('translation_prefix'),
+        tts_model_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_onnx'),
+        tts_voices_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_voices')
     )
     
     translated_audio = "temp_translated_audio.wav"

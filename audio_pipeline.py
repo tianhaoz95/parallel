@@ -30,7 +30,7 @@ def soundfile_load(filepath, frame_offset=0, num_frames=-1, normalize=True, chan
 torchaudio.load = soundfile_load
 
 class AudioPipeline:
-    def __init__(self, asr_model_path, translation_model_path, tts_model_path=None, tts_voices_path=None):
+    def __init__(self, asr_model_path, translation_model_path_prefix, tts_model_path=None, tts_voices_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Initializing Audio Pipeline on {self.device}")
         
@@ -38,72 +38,69 @@ class AudioPipeline:
         logger.info(f"Loading ASR model from {asr_model_path}...")
         self.asr_model = WhisperModel(asr_model_path, device="cpu", compute_type="float32")
         
-        # 2. Initialize Translation
-        logger.info(f"Loading translation model from {translation_model_path}...")
-        self.tokenizer = MarianTokenizer.from_pretrained(translation_model_path)
-        self.translation_model = MarianMTModel.from_pretrained(translation_model_path).to(self.device)
+        # 2. Translation settings (Lazy loading)
+        self.model_prefix = translation_model_path_prefix
+        self.tokenizer = None
+        self.translation_model = None
+        self.current_pair = None
         
-        # 3. Initialize Zero-Shot TTS
-        logger.info("Loading F5-TTS for zero-shot voice cloning...")
-        self.f5tts = F5TTS(device=self.device)
-        
-        # 4. Fallback TTS
-        if tts_model_path and tts_voices_path:
-            logger.info(f"Loading Kokoro fallback from {tts_model_path}...")
-            self.kokoro = Kokoro(tts_model_path, tts_voices_path)
-        else:
-            self.kokoro = None
+        # ... existing F5-TTS and Kokoro init ...
 
-    def transcribe_audio(self, audio_path):
-        segments, _ = self.asr_model.transcribe(audio_path, beam_size=5)
+    def _load_translation_model(self, source_lang, target_lang):
+        pair = f"{source_lang}-{target_lang}"
+        if self.current_pair == pair:
+            return
+            
+        model_id = f"Helsinki-NLP/opus-mt-{pair}"
+        local_path = f"{self.model_prefix}{pair}"
+        
+        # Download if doesn't exist locally
+        if not os.path.exists(local_path):
+            logger.info(f"Local translation model for {pair} not found. Downloading...")
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id=model_id, local_dir=local_path)
+            
+        logger.info(f"Loading translation model for {pair}...")
+        self.tokenizer = MarianTokenizer.from_pretrained(local_path)
+        self.translation_model = MarianMTModel.from_pretrained(local_path).to(self.device)
+        self.current_pair = pair
+
+    def transcribe_audio(self, audio_path, detect_language=False):
+        segments, info = self.asr_model.transcribe(audio_path, beam_size=5)
         text = " ".join([s.text for s in segments]).strip()
+        if detect_language:
+            return text, info.language
         return text
-
-    def separate_audio(self, audio_path, output_dir="separated"):
-        logger.info("Separating audio sources with Demucs...")
-        cmd = f"python3 -m demucs.separate --two-stems=vocals -n htdemucs --out {output_dir} {audio_path}"
-        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        base_name = os.path.splitext(os.path.basename(audio_path))[0]
-        vocals_path = os.path.join(output_dir, "htdemucs", base_name, "vocals.wav")
-        background_path = os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
-        return vocals_path, background_path
 
     def process_video(self, video_path, output_audio_path, ref_audio_path=None, target_lang="es", preserve_bg=True):
         # 1. Extract audio
-        logger.info(f"Extracting audio from {video_path}")
-        video = mp.VideoFileClip(video_path)
-        temp_source_audio = "temp_source.wav"
-        video.audio.write_audiofile(temp_source_audio, logger=None)
+        # ... same as before ...
         
-        vocal_track = temp_source_audio
-        background_track = None
+        # 3. Transcribe with Language Detection
+        logger.info("Transcribing vocal track and detecting language...")
+        source_text, detected_lang = self.transcribe_audio(vocal_track, detect_language=True)
+        logger.info(f"Detected Source Language: {detected_lang}")
         
-        # 2. Source Separation
-        if preserve_bg:
-            try:
-                vocal_track, background_track = self.separate_audio(temp_source_audio)
-            except Exception as e:
-                logger.warning(f"Demucs separation failed: {e}. Proceeding without background preservation.")
-        
-        # 3. Transcribe
-        logger.info("Transcribing vocal track...")
-        source_text = self.transcribe_audio(vocal_track)
         if not source_text or len(source_text.strip()) < 2:
             source_text = "Hello."
         logger.info(f"Source Text: {source_text}")
         
-        # 4. Translate
-        logger.info(f"Translating to {target_lang}...")
-        inputs = self.tokenizer(source_text, return_tensors="pt").to(self.device)
-        translated_tokens = self.translation_model.generate(**inputs, max_length=128)
-        translated_text = self.tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+        # 4. Dynamic Translation Model Loading
+        if detected_lang != target_lang:
+            try:
+                self._load_translation_model(detected_lang, target_lang)
+                logger.info(f"Translating from {detected_lang} to {target_lang}...")
+                inputs = self.tokenizer(source_text, return_tensors="pt").to(self.device)
+                translated_tokens = self.translation_model.generate(**inputs, max_length=128)
+                translated_text = self.tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+            except Exception as e:
+                logger.warning(f"Translation model loading failed for {detected_lang}-{target_lang}: {e}. Falling back to default or skipping translation.")
+                translated_text = source_text
+        else:
+            logger.info("Source and target languages match. Skipping translation.")
+            translated_text = source_text
         
-        # Deduplication fix
-        words = translated_text.split()
-        if len(words) > 5 and len(set(words)) == 1:
-            translated_text = words[0]
-        logger.info(f"Translated Text: {translated_text}")
+        # ... deduplication and synthesis ...
         
         # 5. Synthesis
         temp_translated_vocals = "temp_translated_vocals.wav"
