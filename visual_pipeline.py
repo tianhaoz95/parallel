@@ -71,6 +71,7 @@ class VisualPipeline:
         return Image.fromarray(image)
 
     def restore_faces(self, frame):
+        """Public method to restore faces in a single frame."""
         # GFPGAN expects BGR image
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)

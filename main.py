@@ -35,31 +35,19 @@ def main():
     audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg)
 
     # 2. Visual Processing
-    print("\n--- Step 2: Processing Video (Character Replacement & Face Restoration) ---")
+    print("\n--- Step 2: Processing Video (Character Replacement) ---")
     visual_pipe = VisualPipeline(
         sd_model_path="models/stable-diffusion-v1-5-pretrained",
         controlnet_path="models/sd-controlnet-canny"
     )
     
     transformed_video = "temp_transformed_no_audio.mp4"
-    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=True)
+    # Run replacement WITHOUT face restoration first (we'll do it as the last step)
+    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False)
 
     # 3. Final Merge & Lipsync
-    if args.skip_lipsync:
-        print("\n--- Step 3: Merging Video and Audio (Skipping Lipsync) ---")
-        video_clip = mp.VideoFileClip(transformed_video)
-        audio_clip = mp.AudioFileClip(translated_audio)
-        
-        final_duration = min(video_clip.duration, audio_clip.duration)
-        video_clip = video_clip.set_duration(final_duration)
-        audio_clip = audio_clip.set_duration(final_duration)
-        
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(args.output, codec="libx264", audio_codec="aac")
-        
-        video_clip.close()
-        audio_clip.close()
-    else:
+    final_raw_video = args.output
+    if not args.skip_lipsync:
         print("\n--- Step 3: Processing Lipsync ---")
         temp_merged = "temp_merged_for_lipsync.mp4"
         video_clip = mp.VideoFileClip(transformed_video)
@@ -76,9 +64,36 @@ def main():
         audio_clip.close()
         
         ls_pipe = LipsyncPipeline(model_path="models/wav2lip_256.onnx", input_size=256)
-        ls_pipe.process_video(temp_merged, translated_audio, args.output)
+        # Use a temporary file for the lipsync result before final restoration
+        temp_synced = "temp_synced_no_restoration.mp4"
+        ls_pipe.process_video(temp_merged, translated_audio, temp_synced)
         
+        final_raw_video = temp_synced
         if os.path.exists(temp_merged): os.remove(temp_merged)
+    else:
+        print("\n--- Step 3: Merging Video and Audio (Skipping Lipsync) ---")
+        video_clip = mp.VideoFileClip(transformed_video)
+        audio_clip = mp.AudioFileClip(translated_audio)
+        
+        final_duration = min(video_clip.duration, audio_clip.duration)
+        video_clip = video_clip.set_duration(final_duration)
+        audio_clip = audio_clip.set_duration(final_duration)
+        
+        final_clip = video_clip.set_audio(audio_clip)
+        final_clip.write_videofile(args.output, codec="libx264", audio_codec="aac")
+        
+        video_clip.close()
+        audio_clip.close()
+
+    # 4. Final Face Restoration (Post-Processing)
+    if not args.skip_lipsync:
+        print("\n--- Step 4: Final Face Restoration (High Fidelity Pass) ---")
+        clip = mp.VideoFileClip(final_raw_video)
+        # Restore faces in the final synced clip to ensure mouth and face are equally sharp
+        restored_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
+        restored_clip.write_videofile(args.output, codec="libx264", audio=True)
+        clip.close()
+        if os.path.exists(final_raw_video): os.remove(final_raw_video)
     
     # Cleanup temporary files
     if os.path.exists(translated_audio): os.remove(translated_audio)
