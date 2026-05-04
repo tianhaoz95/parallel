@@ -11,6 +11,9 @@ run-ui:
 test:
 	source .venv/bin/activate && PYTHONPATH=. pytest tests/
 
+benchmark:
+	source .venv/bin/activate && python3 benchmark.py
+
 check-gpu:
 	source .venv/bin/activate && python3 check_gpu.py
 
