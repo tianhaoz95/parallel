@@ -35,7 +35,6 @@ class VisualPipeline:
         
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
         self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
-        
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
             sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
             torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
@@ -52,19 +51,11 @@ class VisualPipeline:
         self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
         
         self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
-        
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
         self.upscaler = RealESRGANer(scale=4, model_path='models/RealESRGAN_x4plus.pth', model=model, tile=400, tile_pad=10, pre_pad=0, half=True if self.device == "cuda" else False, device=self.device)
-        
         self.segmenter = mp_lib.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+        self.vlm = VLMPrompter() if CONFIG.get('optimizations', {}).get('use_vlm', True) else None
         
-        # 7. Load VLM for contextual prompting
-        self.use_vlm = CONFIG.get('optimizations', {}).get('use_vlm', True)
-        if self.use_vlm:
-            self.vlm = VLMPrompter()
-        else:
-            self.vlm = None
-            
         if self.device == "cuda": self.pipe.enable_model_cpu_offload()
 
     def consolidate_identity(self, image_paths):
@@ -75,7 +66,7 @@ class VisualPipeline:
                 if res: 
                     embeddings.append(np.array(res[0]['embedding']))
                     valid_images.append(Image.open(path).convert("RGB").resize((224, 224)))
-            except Exception as e: logger.warning(f"Skipping image {path}: {e}")
+            except: pass
         if not embeddings: return None, []
         return np.mean(embeddings, axis=0), valid_images
 
@@ -100,14 +91,6 @@ class VisualPipeline:
 
     def process_frame_multi(self, frame, identity_map, prompt_base, restore_face=True):
         final_frame = frame.copy()
-        
-        # 1. Get Context Description from VLM (Dynamic Prompting)
-        context_prompt = ""
-        if self.use_vlm and self.vlm:
-            # AnalyzeEvery 30th frame or so for context, or Every frame if enough power
-            # For simplicity, we'll run it once at the start of every shot in process_video
-            pass
-
         try:
             faces_data = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
         except: return frame
@@ -127,17 +110,19 @@ class VisualPipeline:
                 if dist < best_dist: best_dist = dist; matched_id = name
             
             if matched_id:
+                # Use Identity-specific prompt if available, else fallback to base
+                char_prompt = identity_map[matched_id].get('prompt', prompt_base)
+                
                 pil_frame = Image.fromarray(frame).resize((512, 512))
                 canny_image = self.get_canny_image(pil_frame)
                 num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
                 
-                # Combine User Prompt, Style, and VLM Context
-                final_prompt = f"{prompt_base}, {matched_id}"
+                full_prompt = f"{char_prompt}, {matched_id}"
                 if hasattr(self, 'current_context') and self.current_context:
-                    final_prompt += f", in {self.current_context}"
+                    full_prompt += f", {self.current_context}"
 
                 output = self.pipe(
-                    prompt=final_prompt, image=pil_frame, 
+                    prompt=full_prompt, image=pil_frame, 
                     ip_adapter_image=identity_map[matched_id]['images'], 
                     control_image=canny_image,
                     strength=CONFIG.get('defaults', {}).get('sd_strength', 0.6), 
@@ -154,37 +139,32 @@ class VisualPipeline:
         if restore_face: final_frame = self.restore_faces(final_frame)
         return final_frame
 
-    def is_scene_cut(self, curr_frame, prev_frame, threshold=0.8):
-        if prev_frame is None: return False
-        h1 = cv2.calcHist([curr_frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        h2 = cv2.calcHist([prev_frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        cv2.normalize(h1, h1); cv2.normalize(h2, h2)
-        correlation = cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL)
-        return correlation < threshold
-
     def process_video_multi(self, video_path, identity_map_paths, output_video_path, prompt="a person", restore_face=True, upscale=False):
-        logger.info(f"Processing video with VLM-powered Contextual Prompting...")
+        logger.info(f"Processing multi-character video with Identity Customization...")
+        
         identity_map = {}
-        for name, paths in identity_map_paths.items():
+        for name, data in identity_map_paths.items():
+            # data can be list of paths or dict {'images': [], 'prompt': ''}
+            paths = data['images'] if isinstance(data, dict) else data
             emb, imgs = self.consolidate_identity(paths)
-            if emb is not None: identity_map[name] = {'images': imgs, 'consolidated_embedding': emb}
+            if emb is not None:
+                identity_map[name] = {
+                    'images': imgs, 
+                    'consolidated_embedding': emb,
+                    'prompt': data.get('prompt') if isinstance(data, dict) else None
+                }
 
         clip = mp.VideoFileClip(video_path)
         fps = clip.fps; out_w, out_h = (clip.w * 2, clip.h * 2) if upscale else (clip.w, clip.h)
         out = cv2.VideoWriter("temp_streaming.mp4", cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
         
-        test_duration = min(clip.duration, 0.5); count = 0; prev_frame = None
+        test_duration = min(clip.duration, 1.0); count = 0; prev_frame = None
         self.current_context = ""
-        
         try:
             for frame in clip.iter_frames():
                 if count / fps > test_duration: break
-                
-                # Update context on scene cut or every 30 frames
-                if count % 30 == 0 or self.is_scene_cut(frame, prev_frame):
-                    if self.use_vlm and self.vlm:
-                        logger.info("VLM analyzing frame for context...")
-                        self.current_context = self.vlm.describe_frame(frame)
+                if (count % 30 == 0) and self.vlm:
+                    self.current_context = self.vlm.describe_frame(frame)
                 
                 transformed = self.process_frame_multi(frame, identity_map, prompt, restore_face=restore_face)
                 if upscale: 
@@ -192,7 +172,6 @@ class VisualPipeline:
                     transformed, _ = self.upscaler.enhance(frame_bgr, outscale=2)
                     out.write(transformed)
                 else: out.write(cv2.cvtColor(transformed, cv2.COLOR_RGB2BGR))
-                
                 prev_frame = frame.copy(); count += 1
         finally:
             out.release(); clip.close()
