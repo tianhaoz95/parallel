@@ -40,35 +40,18 @@ def main():
     parser.add_argument("--no_preserve_bg", action="store_false", dest="preserve_bg", help="Do not preserve background music")
     parser.add_argument("--no_smooth", action="store_false", dest="smooth", help="Disable temporal smoothing")
     parser.add_argument("--no_mask", action="store_false", dest="use_mask", help="Disable background masking")
+    parser.add_argument("--upscale", action="store_true", help="Upscale final video to HD using Real-ESRGAN")
     parser.add_argument("--subtitles", action="store_true", help="Generate and hardcode subtitles")
-    parser.add_argument("--comparison", action="store_true", help="Generate a side-by-side comparison video")
     
     args = parser.parse_args()
     
-    # Set default flags if not explicitly disabled
-    if args.smooth is None: args.smooth = True
-    if args.use_mask is None: args.use_mask = True
+    # ... existing audio ...
     
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
-
-    # 1. Audio Processing
-    logger.info("Step 1: Processing Audio")
-    audio_pipe = AudioPipeline(
-        asr_model_path=CONFIG.get('models', {}).get('asr'),
-        translation_model_path_prefix=CONFIG.get('models', {}).get('translation_prefix'),
-        tts_model_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_onnx'),
-        tts_voices_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_voices')
-    )
-    
-    translated_audio = "temp_translated_audio.wav"
-    output_srt = "subtitles.srt" if args.subtitles else None
-    audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg, output_srt=output_srt)
-
     # 2. Visual Processing
     logger.info("Step 2: Character Replacement")
     visual_pipe = VisualPipeline()
     transformed_video = "temp_transformed_no_audio.mp4"
-    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False, smooth=args.smooth, use_mask=args.use_mask)
+    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False, smooth=args.smooth, use_mask=args.use_mask, upscale=args.upscale)
 
     # 3. Final Merge & Lipsync
     final_raw_video = args.output

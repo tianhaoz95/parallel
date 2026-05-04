@@ -12,6 +12,8 @@ from diffusers import (
 from transformers import CLIPVisionModelWithProjection
 import moviepy.editor as mp
 from gfpgan import GFPGANer
+from realesrgan import RealESRGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
 import mediapipe as mp_lib
 from logger_utils import logger, CONFIG
 
@@ -71,6 +73,20 @@ class VisualPipeline:
             upscale=1, arch='clean', channel_multiplier=2, device=self.device
         )
         
+        # Load Real-ESRGAN for upscaling
+        logger.info("Loading Real-ESRGAN for video upscaling...")
+        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+        self.upscaler = RealESRGANer(
+            scale=4,
+            model_path='models/RealESRGAN_x4plus.pth',
+            model=model,
+            tile=400,
+            tile_pad=10,
+            pre_pad=0,
+            half=True if self.device == "cuda" else False,
+            device=self.device
+        )
+        
         self.mp_selfie = mp_lib.solutions.selfie_segmentation
         self.segmenter = self.mp_selfie.SelfieSegmentation(model_selection=1)
         
@@ -91,6 +107,12 @@ class VisualPipeline:
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
+
+    def upscale_frame(self, frame):
+        """Upscales a single frame using Real-ESRGAN."""
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        output, _ = self.upscaler.enhance(frame_bgr, outscale=2) # Upscale by 2x for speed vs quality balance
+        return cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
 
     def get_person_mask(self, frame):
         results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -141,8 +163,7 @@ class VisualPipeline:
         warped = cv2.remap(prev_transformed, flow, None, cv2.INTER_LINEAR)
         return warped
 
-    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True):
-        """Processes video using a streaming approach to save memory."""
+    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True, upscale=False):
         if isinstance(ref_image_paths, str):
             ref_image_paths = [ref_image_paths]
             
@@ -152,11 +173,12 @@ class VisualPipeline:
         
         fps = clip.fps
         width, height = clip.size
+        # If upscaling, target resolution is 2x
+        out_w, out_h = (width * 2, height * 2) if upscale else (width, height)
         
-        # Use cv2.VideoWriter for streaming frames to disk
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         temp_out_path = "temp_streaming_visual.mp4"
-        out = cv2.VideoWriter(temp_out_path, fourcc, fps, (width, height))
+        out = cv2.VideoWriter(temp_out_path, fourcc, fps, (out_w, out_h))
         
         test_duration = min(clip.duration, 0.5)
         
@@ -175,7 +197,10 @@ class VisualPipeline:
                     warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
                     curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
                 
-                # cv2 expects BGR
+                # Final Upscale Pass
+                if upscale:
+                    curr_transformed = self.upscale_frame(curr_transformed)
+                
                 out.write(cv2.cvtColor(curr_transformed, cv2.COLOR_RGB2BGR))
                 
                 prev_original = frame.copy()
@@ -185,11 +210,8 @@ class VisualPipeline:
             out.release()
             clip.close()
 
-        # Final move to output_video_path
         if os.path.exists(output_video_path): os.remove(output_video_path)
         os.rename(temp_out_path, output_video_path)
-        
-        logger.info(f"Video saved: {output_video_path}")
         return output_video_path
 
 if __name__ == "__main__":

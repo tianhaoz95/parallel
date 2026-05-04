@@ -40,12 +40,17 @@ def download_models():
     run_command("HF_HUB_ENABLE_HF_TRANSFER=1 hf download latent-consistency/lcm-lora-sdv1-5 pytorch_lora_weights.safetensors --local-dir models/lcm-lora-sdv1-5")
 
     # 7. Face Restoration Model (GFPGAN)
-    print("\n[6/7] Downloading Face Restoration Models (GFPGAN v1.4)...")
+    print("\n[6/8] Downloading Face Restoration Models (GFPGAN v1.4)...")
     if not os.path.exists("models/GFPGANv1.4.pth"):
         run_command("wget https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth -O models/GFPGANv1.4.pth")
 
-    # 8. Lipsync Model
-    print("\n[7/7] Downloading Lip-Sync Models (Wav2Lip 256 ONNX)...")
+    # 8. Video Upscaling Model (Real-ESRGAN)
+    print("\n[7/8] Downloading Video Upscaling Models (Real-ESRGAN)...")
+    if not os.path.exists("models/RealESRGAN_x4plus.pth"):
+        run_command("wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -O models/RealESRGAN_x4plus.pth")
+
+    # 9. Lipsync Model
+    print("\n[8/8] Downloading Lip-Sync Models (Wav2Lip 256 ONNX)...")
     if not os.path.exists("models/wav2lip_256.onnx"):
         run_command("wget https://github.com/instant-high/wav2lip-onnx-256/releases/download/v1.0.0/wav2lip_256.onnx -O models/wav2lip_256.onnx")
 
