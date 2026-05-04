@@ -4,8 +4,15 @@ import moviepy.editor as mp
 from audio_pipeline import AudioPipeline
 from visual_pipeline import VisualPipeline
 from lipsync_pipeline import LipsyncPipeline
+from logger_utils import logger
+from check_gpu import verify_gpu
 
 def main():
+    # Hardware verification
+    if not verify_gpu():
+        logger.error("Incompatible hardware detected. Aborting.")
+        return
+
     parser = argparse.ArgumentParser(description="Video Character Replacement & Audio Translation")
     parser.add_argument("--video", required=True, help="Path to input video")
     parser.add_argument("--ref_image", required=True, help="Path to reference character image")
@@ -23,7 +30,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
 
     # 1. Audio Processing
-    print("\n--- Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning) ---")
+    logger.info("Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning)")
     audio_pipe = AudioPipeline(
         asr_model_path="models/faster-whisper-small",
         translation_model_path=f"models/opus-mt-en-{args.target_lang}",
@@ -35,7 +42,7 @@ def main():
     audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg)
 
     # 2. Visual Processing
-    print("\n--- Step 2: Processing Video (Character Replacement) ---")
+    logger.info("Step 2: Processing Video (Character Replacement)")
     visual_pipe = VisualPipeline(
         sd_model_path="models/stable-diffusion-v1-5-pretrained",
         controlnet_path="models/sd-controlnet-canny"
@@ -48,7 +55,7 @@ def main():
     # 3. Final Merge & Lipsync
     final_raw_video = args.output
     if not args.skip_lipsync:
-        print("\n--- Step 3: Processing Lipsync ---")
+        logger.info("Step 3: Processing Lipsync")
         temp_merged = "temp_merged_for_lipsync.mp4"
         video_clip = mp.VideoFileClip(transformed_video)
         audio_clip = mp.AudioFileClip(translated_audio)
@@ -64,14 +71,13 @@ def main():
         audio_clip.close()
         
         ls_pipe = LipsyncPipeline(model_path="models/wav2lip_256.onnx", input_size=256)
-        # Use a temporary file for the lipsync result before final restoration
         temp_synced = "temp_synced_no_restoration.mp4"
         ls_pipe.process_video(temp_merged, translated_audio, temp_synced)
         
         final_raw_video = temp_synced
         if os.path.exists(temp_merged): os.remove(temp_merged)
     else:
-        print("\n--- Step 3: Merging Video and Audio (Skipping Lipsync) ---")
+        logger.info("Step 3: Merging Video and Audio (Skipping Lipsync)")
         video_clip = mp.VideoFileClip(transformed_video)
         audio_clip = mp.AudioFileClip(translated_audio)
         
@@ -87,9 +93,8 @@ def main():
 
     # 4. Final Face Restoration (Post-Processing)
     if not args.skip_lipsync:
-        print("\n--- Step 4: Final Face Restoration (High Fidelity Pass) ---")
+        logger.info("Step 4: Final Face Restoration (High Fidelity Pass)")
         clip = mp.VideoFileClip(final_raw_video)
-        # Restore faces in the final synced clip to ensure mouth and face are equally sharp
         restored_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
         restored_clip.write_videofile(args.output, codec="libx264", audio=True)
         clip.close()
@@ -99,7 +104,7 @@ def main():
     if os.path.exists(translated_audio): os.remove(translated_audio)
     if os.path.exists(transformed_video): os.remove(transformed_video)
     
-    print(f"\nSUCCESS: Generated final output at {args.output}")
+    logger.info(f"SUCCESS: Generated final output at {args.output}")
 
 if __name__ == "__main__":
     main()
