@@ -38,10 +38,17 @@ def main():
     parser.add_argument("--skip_lipsync", action="store_true", help="Skip the final lipsync step")
     parser.add_argument("--preserve_bg", action="store_true", default=True, help="Preserve background music/SFX using Demucs")
     parser.add_argument("--no_preserve_bg", action="store_false", dest="preserve_bg", help="Do not preserve background music")
+    parser.add_argument("--no_smooth", action="store_false", dest="smooth", help="Disable temporal smoothing")
+    parser.add_argument("--no_mask", action="store_false", dest="use_mask", help="Disable background masking")
     parser.add_argument("--subtitles", action="store_true", help="Generate and hardcode subtitles")
     parser.add_argument("--comparison", action="store_true", help="Generate a side-by-side comparison video")
     
     args = parser.parse_args()
+    
+    # Set default flags if not explicitly disabled
+    if args.smooth is None: args.smooth = True
+    if args.use_mask is None: args.use_mask = True
+    
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
 
     # 1. Audio Processing
@@ -61,7 +68,7 @@ def main():
     logger.info("Step 2: Character Replacement")
     visual_pipe = VisualPipeline()
     transformed_video = "temp_transformed_no_audio.mp4"
-    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False)
+    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False, smooth=args.smooth, use_mask=args.use_mask)
 
     # 3. Final Merge & Lipsync
     final_raw_video = args.output
@@ -88,11 +95,6 @@ def main():
     logger.info("Step 4: Final Polishing")
     clip = mp.VideoFileClip(final_raw_video)
     final_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
-    
-    if args.subtitles and os.path.exists("subtitles.srt"):
-        # Placeholder for hardcoding subtitles if needed, for now we just provide the file
-        logger.info("Subtitles generated at subtitles.srt")
-
     final_clip.write_videofile(args.output, codec="libx264", audio=True)
     clip.close()
     if os.path.exists(final_raw_video) and final_raw_video != args.output: os.remove(final_raw_video)

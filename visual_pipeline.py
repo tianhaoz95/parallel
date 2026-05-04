@@ -71,9 +71,8 @@ class VisualPipeline:
             upscale=1, arch='clean', channel_multiplier=2, device=self.device
         )
         
-        # Initialize MediaPipe Segmentation
         self.mp_selfie = mp_lib.solutions.selfie_segmentation
-        self.segmenter = self.mp_selfie.SelfieSegmentation(model_selection=1) # 1 for landscape
+        self.segmenter = self.mp_selfie.SelfieSegmentation(model_selection=1)
         
         if self.device == "cuda":
             if CONFIG.get('optimizations', {}).get('low_vram', True):
@@ -94,13 +93,11 @@ class VisualPipeline:
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
     def get_person_mask(self, frame):
-        """Returns a binary mask of the person in the frame."""
         results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         condition = np.stack((results.segmentation_mask,) * 3, axis=-1) > 0.5
         return condition.astype(np.uint8) * 255
 
-    def process_frame(self, frame, ref_images, prompt, restore_face=True):
-        # 1. Generate replacement frame
+    def process_frame(self, frame, ref_images, prompt, restore_face=True, use_mask=True):
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
         
@@ -119,17 +116,16 @@ class VisualPipeline:
         
         transformed_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
         
-        # 2. Masking pass: Blend transformed character back into original high-res background
-        mask = self.get_person_mask(frame)
-        # Smooth mask
-        mask = cv2.GaussianBlur(mask, (15, 15), 0)
-        mask_norm = mask.astype(float) / 255.0
-        
-        # Composite: (transformed * mask) + (original * (1-mask))
-        final_frame = (transformed_frame.astype(float) * mask_norm + 
-                       frame.astype(float) * (1.0 - mask_norm))
-        final_frame = final_frame.astype(np.uint8)
-        
+        if use_mask:
+            mask = self.get_person_mask(frame)
+            mask = cv2.GaussianBlur(mask, (15, 15), 0)
+            mask_norm = mask.astype(float) / 255.0
+            final_frame = (transformed_frame.astype(float) * mask_norm + 
+                           frame.astype(float) * (1.0 - mask_norm))
+            final_frame = final_frame.astype(np.uint8)
+        else:
+            final_frame = transformed_frame
+            
         if restore_face:
             final_frame = self.restore_faces(final_frame)
             
@@ -145,41 +141,54 @@ class VisualPipeline:
         warped = cv2.remap(prev_transformed, flow, None, cv2.INTER_LINEAR)
         return warped
 
-    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True):
+    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True):
+        """Processes video using a streaming approach to save memory."""
         if isinstance(ref_image_paths, str):
             ref_image_paths = [ref_image_paths]
             
-        logger.info(f"Processing video {video_path} with Masking & Temporal Smoothing...")
+        logger.info(f"Processing video {video_path}...")
         clip = mp.VideoFileClip(video_path)
         ref_images = [Image.open(p).convert("RGB").resize((224, 224)) for p in ref_image_paths]
         
         fps = clip.fps
+        width, height = clip.size
+        
+        # Use cv2.VideoWriter for streaming frames to disk
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        temp_out_path = "temp_streaming_visual.mp4"
+        out = cv2.VideoWriter(temp_out_path, fourcc, fps, (width, height))
+        
         test_duration = min(clip.duration, 0.5)
         
-        processed_frames = []
         prev_original = None
         prev_transformed = None
-        
         count = 0
-        for frame in clip.iter_frames():
-            if count / fps > test_duration:
-                break
-            
-            curr_transformed = self.process_frame(frame, ref_images, prompt, restore_face=restore_face)
-            
-            if smooth and prev_transformed is not None:
-                warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
-                curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
-            
-            processed_frames.append(curr_transformed)
-            prev_original = frame.copy()
-            prev_transformed = curr_transformed.copy()
-            count += 1
-            
-        new_clip = mp.ImageSequenceClip(processed_frames, fps=fps)
-        new_clip.write_videofile(output_video_path, codec="libx264", audio=False, logger=None)
         
-        clip.close()
+        try:
+            for frame in clip.iter_frames():
+                if count / fps > test_duration:
+                    break
+                
+                curr_transformed = self.process_frame(frame, ref_images, prompt, restore_face=restore_face, use_mask=use_mask)
+                
+                if smooth and prev_transformed is not None:
+                    warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
+                    curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
+                
+                # cv2 expects BGR
+                out.write(cv2.cvtColor(curr_transformed, cv2.COLOR_RGB2BGR))
+                
+                prev_original = frame.copy()
+                prev_transformed = curr_transformed.copy()
+                count += 1
+        finally:
+            out.release()
+            clip.close()
+
+        # Final move to output_video_path
+        if os.path.exists(output_video_path): os.remove(output_video_path)
+        os.rename(temp_out_path, output_video_path)
+        
         logger.info(f"Video saved: {output_video_path}")
         return output_video_path
 
