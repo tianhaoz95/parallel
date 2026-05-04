@@ -4,7 +4,7 @@ from main import main as run_pipeline
 import sys
 from unittest.mock import patch
 
-def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync):
+def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg):
     if video is None or ref_image is None:
         return "Error: Video and Reference Image are required."
     
@@ -23,6 +23,8 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
         args.extend(["--ref_audio", ref_audio])
     if skip_lipsync:
         args.append("--skip_lipsync")
+    if not preserve_bg:
+        args.append("--no_preserve_bg")
         
     print(f"Running pipeline with args: {args}")
     
@@ -60,6 +62,7 @@ with gr.Blocks(title="Video & Audio Transformer") as demo:
                 )
             
             skip_lipsync = gr.Checkbox(label="Skip Lip-Sync (Faster)", value=False)
+            preserve_bg = gr.Checkbox(label="Preserve Background Music (Demucs)", value=True)
             run_btn = gr.Button("🚀 Start Transformation", variant="primary")
             
         with gr.Column():
@@ -68,7 +71,7 @@ with gr.Blocks(title="Video & Audio Transformer") as demo:
 
     run_btn.click(
         fn=transform_video,
-        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync],
+        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg],
         outputs=[output_video]
     )
 

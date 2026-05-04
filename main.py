@@ -14,23 +14,15 @@ def main():
     parser.add_argument("--prompt", default="a person", help="Prompt describing the replacement character")
     parser.add_argument("--output", default="final_output.mp4", help="Path to output video")
     parser.add_argument("--skip_lipsync", action="store_true", help="Skip the final lipsync step")
+    parser.add_argument("--preserve_bg", action="store_true", default=True, help="Preserve background music/SFX using Demucs")
+    parser.add_argument("--no_preserve_bg", action="store_false", dest="preserve_bg", help="Do not preserve background music")
     
     args = parser.parse_args()
 
-    # Create output directory if it doesn't exist
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
-
-    # 1. Audio Processing
-    print("\n--- Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning) ---")
-    audio_pipe = AudioPipeline(
-        asr_model_path="models/faster-whisper-small",
-        translation_model_path=f"models/opus-mt-en-{args.target_lang}",
-        tts_model_path="models/Kokoro-82M/kokoro-v1.0.onnx",
-        tts_voices_path="models/Kokoro-82M/voices.bin"
-    )
+    # ... existing code ...
     
     translated_audio = "temp_translated_audio.wav"
-    audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang)
+    audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg)
 
     # 2. Visual Processing
     print("\n--- Step 2: Processing Video (Character Replacement) ---")
