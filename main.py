@@ -19,20 +19,30 @@ def main():
     
     args = parser.parse_args()
 
-    # ... existing code ...
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
+
+    # 1. Audio Processing
+    print("\n--- Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning) ---")
+    audio_pipe = AudioPipeline(
+        asr_model_path="models/faster-whisper-small",
+        translation_model_path=f"models/opus-mt-en-{args.target_lang}",
+        tts_model_path="models/Kokoro-82M/kokoro-v1.0.onnx",
+        tts_voices_path="models/Kokoro-82M/voices.bin"
+    )
     
     translated_audio = "temp_translated_audio.wav"
     audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg)
 
     # 2. Visual Processing
-    print("\n--- Step 2: Processing Video (Character Replacement) ---")
+    print("\n--- Step 2: Processing Video (Character Replacement & Face Restoration) ---")
     visual_pipe = VisualPipeline(
         sd_model_path="models/stable-diffusion-v1-5-pretrained",
         controlnet_path="models/sd-controlnet-canny"
     )
     
     transformed_video = "temp_transformed_no_audio.mp4"
-    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt)
+    visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=True)
 
     # 3. Final Merge & Lipsync
     if args.skip_lipsync:
@@ -51,7 +61,6 @@ def main():
         audio_clip.close()
     else:
         print("\n--- Step 3: Processing Lipsync ---")
-        # Temporary merged file to feed into lipsync
         temp_merged = "temp_merged_for_lipsync.mp4"
         video_clip = mp.VideoFileClip(transformed_video)
         audio_clip = mp.AudioFileClip(translated_audio)

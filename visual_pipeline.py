@@ -6,6 +6,7 @@ from PIL import Image
 from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, UniPCMultistepScheduler
 from transformers import CLIPVisionModelWithProjection
 import moviepy.editor as mp
+from gfpgan import GFPGANer
 
 class VisualPipeline:
     def __init__(self, 
@@ -47,6 +48,18 @@ class VisualPipeline:
         )
         self.pipe.set_ip_adapter_scale(0.7)
         
+        # 5. Load GFPGAN for Face Restoration
+        print("Loading GFPGAN for face restoration...")
+        # arch: clean, model_path: path to weights, upscale: 2, device: cuda
+        # The model will auto-download if not present
+        self.face_restorer = GFPGANer(
+            model_path='models/GFPGANv1.4.pth',
+            upscale=1,
+            arch='clean',
+            channel_multiplier=2,
+            device=self.device
+        )
+        
         if self.device == "cuda":
             self.pipe.enable_model_cpu_offload()
 
@@ -57,7 +70,13 @@ class VisualPipeline:
         image = np.concatenate([image, image, image], axis=2)
         return Image.fromarray(image)
 
-    def process_frame(self, frame, ref_image, prompt):
+    def restore_faces(self, frame):
+        # GFPGAN expects BGR image
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)
+        return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
+
+    def process_frame(self, frame, ref_image, prompt, restore_face=True):
         # Resize to 512x512 for SD 1.5
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
@@ -71,14 +90,21 @@ class VisualPipeline:
             num_inference_steps=15
         ).images[0]
         
-        return np.array(output.resize((frame.shape[1], frame.shape[0])))
+        # Convert back to numpy
+        res_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
+        
+        # Apply face restoration if requested
+        if restore_face:
+            res_frame = self.restore_faces(res_frame)
+            
+        return res_frame
 
-    def process_video(self, video_path, ref_image_path, output_video_path, prompt="a person"):
+    def process_video(self, video_path, ref_image_path, output_video_path, prompt="a person", restore_face=True):
         clip = mp.VideoFileClip(video_path)
         ref_image = Image.open(ref_image_path).convert("RGB").resize((224, 224))
         
         test_duration = min(clip.duration, 0.5)
-        print(f"Processing {test_duration} seconds of video with IP-Adapter Plus...")
+        print(f"Processing {test_duration} seconds of video with IP-Adapter Plus & GFPGAN...")
         
         frames = []
         count = 0
@@ -86,7 +112,7 @@ class VisualPipeline:
         for frame in clip.iter_frames():
             if count / fps > test_duration:
                 break
-            new_frame = self.process_frame(frame, ref_image, prompt)
+            new_frame = self.process_frame(frame, ref_image, prompt, restore_face=restore_face)
             frames.append(new_frame)
             count += 1
             
