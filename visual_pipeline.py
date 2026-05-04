@@ -153,20 +153,25 @@ class VisualPipeline:
         if restore_face: final_frame = self.restore_faces(final_frame)
         return final_frame
 
-    def warp_frame(self, prev_transformed, prev_original, curr_original):
-        prev_gray = cv2.cvtColor(prev_original, cv2.COLOR_RGB2GRAY); curr_gray = cv2.cvtColor(curr_original, cv2.COLOR_RGB2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        h, w = flow.shape[:2]
-        flow[:,:,0] += np.arange(w); flow[:,:,1] += np.arange(h)[:,np.newaxis]
-        return cv2.remap(prev_transformed, flow, None, cv2.INTER_LINEAR)
+    def is_scene_cut(self, curr_frame, prev_frame, threshold=0.8):
+        """Detects if there is a scene cut between two frames using histogram correlation."""
+        if prev_frame is None: return False
+        
+        h1 = cv2.calcHist([curr_frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+        h2 = cv2.calcHist([prev_frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+        
+        cv2.normalize(h1, h1)
+        cv2.normalize(h2, h2)
+        
+        correlation = cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL)
+        return correlation < threshold
 
     def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True, erase_original=True, upscale=False):
+        """Processes video with scene-aware temporal smoothing."""
         if isinstance(ref_image_paths, str): ref_image_paths = [ref_image_paths]
-        logger.info(f"Processing video {video_path} with Inpainting: {erase_original}")
+        logger.info(f"Processing video {video_path} with Scene-Aware Smoothing...")
         clip = mp.VideoFileClip(video_path)
         ref_images = [Image.open(p).convert("RGB").resize((224, 224)) for p in ref_image_paths]
-        
-        # Identity embeddings (dummy for now as per previous implementation)
         ref_embeddings = ref_image_paths
 
         fps = clip.fps; width, height = clip.size
@@ -175,19 +180,34 @@ class VisualPipeline:
         temp_out_path = "temp_streaming_visual.mp4"
         out = cv2.VideoWriter(temp_out_path, fourcc, fps, (out_w, out_h))
         
-        test_duration = min(clip.duration, 0.5); prev_original = None; prev_transformed = None; count = 0
+        test_duration = min(clip.duration, 0.5)
+        prev_original = None; prev_transformed = None; count = 0
+        
         try:
             for frame in clip.iter_frames():
                 if count / fps > test_duration: break
+                
+                # Check for scene cut to reset smoothing
+                if smooth and prev_original is not None:
+                    if self.is_scene_cut(frame, prev_original):
+                        logger.info(f"Scene cut detected at frame {count}. Resetting smoothing buffer.")
+                        prev_transformed = None
+                
                 curr_transformed = self.process_frame(frame, ref_images, ref_embeddings, prompt, restore_face=restore_face, use_mask=use_mask, erase_original=erase_original)
+                
                 if smooth and prev_transformed is not None:
                     warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
                     curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
+                
                 if upscale: curr_transformed = self.upscale_frame(curr_transformed)
                 out.write(cv2.cvtColor(curr_transformed, cv2.COLOR_RGB2BGR))
-                prev_original = frame.copy(); prev_transformed = curr_transformed.copy(); count += 1
+                
+                prev_original = frame.copy()
+                prev_transformed = curr_transformed.copy()
+                count += 1
         finally:
             out.release(); clip.close()
+        
         if os.path.exists(output_video_path): os.remove(output_video_path)
         os.rename(temp_out_path, output_video_path)
         return output_video_path
