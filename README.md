@@ -67,6 +67,23 @@ For batch processing or automation:
 - `samples/`: Test assets.
 
 ## Implementation Details
-- **Temporal Consistency**: Handled via ControlNet structure guidance.
-- **VRAM Management**: Uses `enable_model_cpu_offload()` to run on consumer hardware.
+- **Temporal Consistency**: Handled via ControlNet structure guidance at every frame.
+- **VRAM Management**: Uses `enable_model_cpu_offload()` and FP16/CPU-mixed precision to fit into consumer GPUs (12GB+).
 - **Zero-Shot Transfer**: Visuals use IP-Adapter Plus; Audio uses F5-TTS for high-fidelity zero-shot voice cloning.
+
+## 💡 Tips for High-Quality Results
+
+### 🖼 Visuals
+- **Prompt Engineering**: The `--prompt` is critical. Use descriptions like "cinematic lighting", "high resolution", and "matching environment" to help the diffusion model blend the character into the scene.
+- **Reference Image**: Use a clear, front-facing portrait with neutral lighting for the best IP-Adapter results.
+- **Motion**: ControlNet Canny works best with clear, high-contrast video. If the video is too dark, try brightening it before processing.
+
+### 🎙 Audio
+- **Reference Audio**: Use 5-15 seconds of clean speech (no background music/noise).
+- **Zero-Shot Accuracy**: If the cloned voice sounds "electronic", try a longer reference recording or ensure the transcription of the reference (handled automatically) is accurate.
+- **Language**: MarianMT supports many language pairs. The default is `es` (Spanish), but you can change it to `fr`, `de`, `it`, etc., provided the model is downloaded.
+
+## 🔧 Troubleshooting
+- **Out of Memory (OOM)**: If you run out of VRAM, try closing other GPU-heavy apps or reducing the resolution in `visual_pipeline.py`.
+- **ffmpeg errors**: Ensure `static-ffmpeg` is correctly installed. The script automatically handles paths, but sometimes a manual `source .venv/bin/activate` is required.
+- **Indentation/Python errors**: Ensure you are using Python 3.12+ as specified in the requirements.
