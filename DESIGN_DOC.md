@@ -13,53 +13,43 @@ The visual pipeline replaces characters frame-by-frame while preserving structur
 
 #### Implemented Models:
 *   **Stable Diffusion 1.5**: The core generative engine.
-*   **ControlNet Canny**: Extracts the structural edges from the original video to ensure the replacement character follows the exact same motion and pose.
-*   **IP-Adapter Plus (ViT-H/14)**: Extracts semantic facial and clothing features from the reference image and injects them into the diffusion process for accurate character replacement.
-
-#### Workflow:
-1.  **Extraction**: Video frames are extracted and processed individually.
-2.  **Structural Mapping**: ControlNet generates edge maps from the original frame.
-3.  **Semantic Injection**: IP-Adapter extracts character identity from the reference image.
-4.  **Denoising**: Stable Diffusion generates the new frame guided by both the edge map (motion) and the character features (identity).
+*   **ControlNet Canny**: Extracts structural edges to maintain motion and pose.
+*   **IP-Adapter Plus (ViT-H/14)**: Extracts semantic character features from the reference image.
+*   **GFPGAN v1.4**: Restores facial details in a post-sync pass for maximum clarity.
+*   **LCM LoRA**: Provides an optional 8x speedup (Fast Mode) for video generation.
 
 ### 2.2 Audio Pipeline (ASR, Translation & Zero-Shot Cloning)
 The audio pipeline handles the semantic and vocal transformation of the soundtrack.
 
 #### Implemented Models:
-*   **Faster-Whisper (small)**: High-speed local Automatic Speech Recognition.
-*   **MarianMT (Opus-MT)**: Transformer-based local translation (English to Spanish/French/German/etc.).
-*   **F5-TTS**: A state-of-the-art Flow-Matching Diffusion model for **true zero-shot voice cloning**. It clones the reference voice from a short 5-15s recording.
-
-#### Workflow:
-1.  **Transcription**: Whisper converts source audio to text.
-2.  **Translation**: MarianMT translates the text into the target language.
-3.  **Style Extraction**: F5-TTS analyzes the reference recording to capture vocal timbre and cadence.
-4.  **Synthesis**: F5-TTS generates the translated text in the cloned voice.
+*   **Faster-Whisper**: High-speed local ASR with **Automatic Language Detection**.
+*   **MarianMT (Opus-MT)**: **Dynamic translation** engine that loads required models on the fly.
+*   **F5-TTS**: State-of-the-art **Zero-Shot Voice Cloning** from a 10s reference recording.
+*   **Demucs**: Audio source separation for **Background Music/SFX Preservation**.
+*   **pysubs2**: Automatic generation of synchronized **SRT Subtitles**.
 
 ### 2.3 Synchronization Pipeline (Lip-Sync)
 Ensures the visuals and transformed audio are perfectly aligned.
 
 #### Implemented Models:
 *   **Wav2Lip 256 (ONNX)**: High-resolution lip-syncing model.
-*   **MediaPipe**: Lightweight, fast face detection used to track the character's mouth area for lip-syncing.
+*   **MediaPipe**: Fast face detection for mouth tracking.
 
 ## 3. Tech Stack & Integration
-*   **Orchestration**: Python 3.12 with custom modules.
-*   **Video Processing**: MoviePy and OpenCV.
-*   **Audio Processing**: SoundFile and Pydub.
-*   **Portability**: Bundled `static-ffmpeg` to provide `ffmpeg`/`ffprobe` binaries without system-wide dependencies.
-*   **Interface**: Gradio for the Web UI and `argparse` for the CLI.
+*   **Orchestration**: Python 3.12 with clean, decoupled modules.
+*   **UI**: **Gradio Web UI** with **Real-time Progress Tracking**, **Creative Style Presets**, and a **Transformation History Gallery**.
+*   **CLI**: Robust script for automated and batch processing.
+*   **Automation**: setup scripts (Linux/Windows), **Makefile**, and **Docker**.
 
 ## 4. Hardware Requirements
 Verified on **NVIDIA GB10 (Blackwell)** hardware:
-*   **GPU**: NVIDIA RTX 3060 (12GB VRAM) minimum. 24GB recommended for high-resolution processing.
-*   **CPU**: Modern multi-core processor for ASR and orchestration.
-*   **RAM**: 16GB+ (32GB preferred).
+*   **GPU**: NVIDIA RTX 3060 (12GB VRAM) minimum. 24GB recommended.
+*   **VRAM Optimization**: Uses aggressive CPU offloading and FP16 precision.
 
 ## 5. Implementation Summary
-The project was implemented in 5 phases, moving from basic audio/visual prototypes to a unified, synchronized system. The final deliverable includes both a CLI tool and a Gradio Web UI for maximum accessibility.
+The project was implemented in 5 phases, evolving from prototypes into a comprehensive, production-ready suite. All engineering standards, including unit testing (`pytest`) and CI/CD (GitHub Actions), are met.
 
 ## 6. Challenges & Mitigations
-*   **Environmental Conflicts**: Resolved issues with `torchcodec` and `moviepy` versions by implementing custom loaders and pinning dependencies.
-*   **Temporal Consistency**: Mitigated flickering by using ControlNet structure guidance at every frame.
-*   **Hallucinations**: Improved translation robustness with deduplication logic for the MarianMT output.
+*   **Multilingual Support**: Mitigated via dynamic model loading based on Whisper's language detection.
+*   **Visual Fidelity**: Optimized by running face restoration *after* the lip-syncing pass.
+*   **User Experience**: Solved via a persistent history system and automated dependency management.
