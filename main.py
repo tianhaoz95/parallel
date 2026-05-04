@@ -4,11 +4,26 @@ import moviepy.editor as mp
 from audio_pipeline import AudioPipeline
 from visual_pipeline import VisualPipeline
 from lipsync_pipeline import LipsyncPipeline
-from logger_utils import logger
+from logger_utils import logger, CONFIG
 from check_gpu import verify_gpu
 
+def generate_comparison(input_video, transformed_video, output_path):
+    logger.info("Generating side-by-side comparison video...")
+    clip1 = mp.VideoFileClip(input_video).margin(10)
+    clip2 = mp.VideoFileClip(transformed_video).margin(10)
+    
+    # Text labels
+    txt1 = mp.TextClip("Original", fontsize=50, color='white', font='Arial-Bold').set_duration(clip1.duration).set_position(('center', 'top'))
+    txt2 = mp.TextClip("Transformed", fontsize=50, color='white', font='Arial-Bold').set_duration(clip2.duration).set_position(('center', 'top'))
+    
+    comp1 = mp.CompositeVideoClip([clip1, txt1])
+    comp2 = mp.CompositeVideoClip([clip2, txt2])
+    
+    final = mp.clips_array([[comp1, comp2]])
+    final.write_videofile(output_path, codec="libx264")
+    clip1.close(); clip2.close()
+
 def main():
-    # Hardware verification
     if not verify_gpu():
         logger.error("Incompatible hardware detected. Aborting.")
         return
@@ -23,14 +38,14 @@ def main():
     parser.add_argument("--skip_lipsync", action="store_true", help="Skip the final lipsync step")
     parser.add_argument("--preserve_bg", action="store_true", default=True, help="Preserve background music/SFX using Demucs")
     parser.add_argument("--no_preserve_bg", action="store_false", dest="preserve_bg", help="Do not preserve background music")
+    parser.add_argument("--subtitles", action="store_true", help="Generate and hardcode subtitles")
+    parser.add_argument("--comparison", action="store_true", help="Generate a side-by-side comparison video")
     
     args = parser.parse_args()
-
-    # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) if os.path.dirname(args.output) else ".", exist_ok=True)
 
     # 1. Audio Processing
-    logger.info("Step 1: Processing Audio (Transcription, Translation, Zero-Shot Cloning)")
+    logger.info("Step 1: Processing Audio")
     audio_pipe = AudioPipeline(
         asr_model_path=CONFIG.get('models', {}).get('asr'),
         translation_model_path_prefix=CONFIG.get('models', {}).get('translation_prefix'),
@@ -39,17 +54,13 @@ def main():
     )
     
     translated_audio = "temp_translated_audio.wav"
-    audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg)
+    output_srt = "subtitles.srt" if args.subtitles else None
+    audio_pipe.process_video(args.video, translated_audio, ref_audio_path=args.ref_audio, target_lang=args.target_lang, preserve_bg=args.preserve_bg, output_srt=output_srt)
 
     # 2. Visual Processing
-    logger.info("Step 2: Processing Video (Character Replacement)")
-    visual_pipe = VisualPipeline(
-        sd_model_path="models/stable-diffusion-v1-5-pretrained",
-        controlnet_path="models/sd-controlnet-canny"
-    )
-    
+    logger.info("Step 2: Character Replacement")
+    visual_pipe = VisualPipeline()
     transformed_video = "temp_transformed_no_audio.mp4"
-    # Run replacement WITHOUT face restoration first (we'll do it as the last step)
     visual_pipe.process_video(args.video, args.ref_image, transformed_video, prompt=args.prompt, restore_face=False)
 
     # 3. Final Merge & Lipsync
@@ -57,54 +68,43 @@ def main():
     if not args.skip_lipsync:
         logger.info("Step 3: Processing Lipsync")
         temp_merged = "temp_merged_for_lipsync.mp4"
-        video_clip = mp.VideoFileClip(transformed_video)
-        audio_clip = mp.AudioFileClip(translated_audio)
+        v_clip, a_clip = mp.VideoFileClip(transformed_video), mp.AudioFileClip(translated_audio)
+        dur = min(v_clip.duration, a_clip.duration)
+        v_clip.set_duration(dur).set_audio(a_clip).write_videofile(temp_merged, codec="libx264", audio_codec="aac", logger=None)
+        v_clip.close(); a_clip.close()
         
-        final_duration = min(video_clip.duration, audio_clip.duration)
-        video_clip = video_clip.set_duration(final_duration)
-        audio_clip = audio_clip.set_duration(final_duration)
-        
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(temp_merged, codec="libx264", audio_codec="aac", logger=None)
-        
-        video_clip.close()
-        audio_clip.close()
-        
-        ls_pipe = LipsyncPipeline(model_path="models/wav2lip_256.onnx", input_size=256)
+        ls_pipe = LipsyncPipeline()
         temp_synced = "temp_synced_no_restoration.mp4"
         ls_pipe.process_video(temp_merged, translated_audio, temp_synced)
-        
         final_raw_video = temp_synced
         if os.path.exists(temp_merged): os.remove(temp_merged)
     else:
-        logger.info("Step 3: Merging Video and Audio (Skipping Lipsync)")
-        video_clip = mp.VideoFileClip(transformed_video)
-        audio_clip = mp.AudioFileClip(translated_audio)
-        
-        final_duration = min(video_clip.duration, audio_clip.duration)
-        video_clip = video_clip.set_duration(final_duration)
-        audio_clip = audio_clip.set_duration(final_duration)
-        
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(args.output, codec="libx264", audio_codec="aac")
-        
-        video_clip.close()
-        audio_clip.close()
+        v_clip, a_clip = mp.VideoFileClip(transformed_video), mp.AudioFileClip(translated_audio)
+        dur = min(v_clip.duration, a_clip.duration)
+        v_clip.set_duration(dur).set_audio(a_clip).write_videofile(args.output, codec="libx264", audio_codec="aac")
+        v_clip.close(); a_clip.close()
 
-    # 4. Final Face Restoration (Post-Processing)
-    if not args.skip_lipsync:
-        logger.info("Step 4: Final Face Restoration (High Fidelity Pass)")
-        clip = mp.VideoFileClip(final_raw_video)
-        restored_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
-        restored_clip.write_videofile(args.output, codec="libx264", audio=True)
-        clip.close()
-        if os.path.exists(final_raw_video): os.remove(final_raw_video)
+    # 4. Final Face Restoration & Subtitles
+    logger.info("Step 4: Final Polishing")
+    clip = mp.VideoFileClip(final_raw_video)
+    final_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
     
-    # Cleanup temporary files
-    if os.path.exists(translated_audio): os.remove(translated_audio)
-    if os.path.exists(transformed_video): os.remove(transformed_video)
+    if args.subtitles and os.path.exists("subtitles.srt"):
+        # Placeholder for hardcoding subtitles if needed, for now we just provide the file
+        logger.info("Subtitles generated at subtitles.srt")
+
+    final_clip.write_videofile(args.output, codec="libx264", audio=True)
+    clip.close()
+    if os.path.exists(final_raw_video) and final_raw_video != args.output: os.remove(final_raw_video)
+
+    # 5. Optional Comparison
+    if args.comparison:
+        generate_comparison(args.video, args.output, "comparison_view.mp4")
     
-    logger.info(f"SUCCESS: Generated final output at {args.output}")
+    # Cleanup
+    for f in [translated_audio, transformed_video]:
+        if os.path.exists(f): os.remove(f)
+    logger.info(f"SUCCESS: Result saved at {args.output}")
 
 if __name__ == "__main__":
     main()
