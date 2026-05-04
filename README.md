@@ -3,13 +3,15 @@
 A local, end-to-end pipeline for transforming video content using state-of-the-art machine learning models. This project allows you to replace a character in a video with a person from a reference image and translate the audio into another language while maintaining vocal characteristics.
 
 ## Features
-- **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** (for structure) and **IP-Adapter Plus** (for character features) to replace people in videos based on a reference image.
+- **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** and **IP-Adapter Plus** to replace people in videos based on a reference image.
+- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces in every frame.
 - **Audio Pipeline**: 
     - **Transcription**: Powered by `faster-whisper`.
     - **Translation**: Uses `MarianMT` (Opus-MT) models for high-quality local translation.
-    - **Zero-Shot Voice Cloning**: Powered by **F5-TTS (Flow-Matching Diffusion)** to clone voices from a 5-15s reference recording.
-- **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** with **MediaPipe** face detection to synchronize the new character's lips with the translated audio.
-- **Automatic Orchestration**: A unified CLI tool that handles the entire multi-step process and merges the results.
+    - **Zero-Shot Voice Cloning**: Powered by **F5-TTS** to clone voices from a 5-15s reference recording.
+    - **Atmosphere Preservation**: Uses **Demucs** audio source separation to preserve original background music and sound effects.
+- **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** with **MediaPipe** face detection to synchronize the new character's lips.
+- **Automatic Orchestration**: Unified CLI tool and Gradio Web UI that handle the entire process.
 
 ## Requirements
 - **Hardware**: NVIDIA GPU with 12GB+ VRAM (RTX 3060 or higher). 24GB VRAM (RTX 3090/4090) recommended for best performance.

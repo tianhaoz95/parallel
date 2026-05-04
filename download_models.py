@@ -35,8 +35,13 @@ def download_models():
     run_command("HF_HUB_ENABLE_HF_TRANSFER=1 hf download h94/IP-Adapter models/ip-adapter-plus_sd15.bin --local-dir models/IP-Adapter_plus")
     run_command("HF_HUB_ENABLE_HF_TRANSFER=1 hf download laion/CLIP-ViT-H-14-laion2B-s32B-b79K pytorch_model.bin config.json --local-dir models/image_encoder_H14")
 
-    # 6. Lipsync Model
-    print("\n[5/5] Downloading Lip-Sync Models (Wav2Lip 256 ONNX)...")
+    # 6. Face Restoration Model (GFPGAN)
+    print("\n[5/6] Downloading Face Restoration Models (GFPGAN v1.4)...")
+    if not os.path.exists("models/GFPGANv1.4.pth"):
+        run_command("wget https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth -O models/GFPGANv1.4.pth")
+
+    # 7. Lipsync Model
+    print("\n[6/6] Downloading Lip-Sync Models (Wav2Lip 256 ONNX)...")
     if not os.path.exists("models/wav2lip_256.onnx"):
         run_command("wget https://github.com/instant-high/wav2lip-onnx-256/releases/download/v1.0.0/wav2lip_256.onnx -O models/wav2lip_256.onnx")
 

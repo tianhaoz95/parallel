@@ -31,7 +31,7 @@ This document breaks down the design into actionable tasks and subtasks. Each ta
 *   **Verifiable Result**: Integrated `SD 1.5` + `ControlNet Canny` + `IP-Adapter Plus` for reference-image-based character replacement.
 
 ### Task 3.2: High-Fidelity Face Refinement [DONE]
-*   **Verifiable Result**: Handled via IP-Adapter Plus semantic feature injection.
+*   **Verifiable Result**: Integrated `GFPGAN v1.4` for automated facial detail restoration.
 
 ---
 
@@ -42,7 +42,7 @@ This document breaks down the design into actionable tasks and subtasks. Each ta
 *   **Verifiable Result**: Integrated `Wav2Lip 256 ONNX` + `MediaPipe` for high-resolution lip-syncing.
 
 ### Task 4.2: Final Compositing & Rendering [DONE]
-*   **Verifiable Result**: `main.py` successfully merges visuals, translated audio, and lip-sync.
+*   **Verifiable Result**: Integrated `Demucs` for background music/SFX preservation. `main.py` successfully merges visuals, translated audio, and original atmosphere.
 
 ---
 
