@@ -30,7 +30,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Video Character Replacement & Audio Translation")
     parser.add_argument("--video", required=True, help="Path to input video")
-    parser.add_argument("--ref_image", required=True, help="Path to reference character image")
+    parser.add_argument("--ref_image", required=True, nargs="+", help="Path to reference character image(s)")
     parser.add_argument("--ref_audio", help="Path to reference audio for style transfer (optional)")
     parser.add_argument("--target_lang", default="es", help="Target language (default: es)")
     parser.add_argument("--prompt", default="a person", help="Prompt describing the replacement character")

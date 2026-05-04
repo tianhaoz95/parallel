@@ -22,11 +22,11 @@ def save_history(entry):
     history = load_history()
     history.insert(0, entry) # Newest first
     with open(HISTORY_FILE, 'w') as f:
-        json.dump(history[:50], f, indent=2) # Keep last 50
+        json.dump(history[:50], f, indent=2)
 
-def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison, progress=gr.Progress()):
-    if video is None or ref_image is None:
-        return None, None, "Error: Video and Reference Image are required.", gr.update()
+def transform_video(video, ref_images, ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison, progress=gr.Progress()):
+    if video is None or not ref_images:
+        return None, None, "Error: Video and at least one Reference Image are required.", gr.update()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = f"output_{timestamp}.mp4"
@@ -35,13 +35,18 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, ski
     style_suffix = CONFIG.get('styles', {}).get(style, "")
     full_prompt = f"{prompt}, {style_suffix}" if style_suffix else prompt
     
+    # args expects a list of images for --ref_image
     args = [
         "--video", video,
-        "--ref_image", ref_image,
+        "--ref_image"
+    ]
+    args.extend(ref_images)
+    
+    args.extend([
         "--target_lang", target_lang,
         "--prompt", full_prompt,
         "--output", output_path
-    ]
+    ])
     
     if ref_audio: args.extend(["--ref_audio", ref_audio])
     if skip_lipsync: args.append("--skip_lipsync")
@@ -50,7 +55,7 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, ski
         
     CONFIG['defaults']['use_lcm'] = use_lcm
     
-    logger.info(f"UI transformation. Style: {style}, LCM: {use_lcm}")
+    logger.info(f"UI transformation. Images: {len(ref_images)}, Style: {style}")
     progress(0, desc="🚀 Starting Pipeline...")
     
     with patch.object(sys, 'argv', ["main.py"] + args):
@@ -62,7 +67,6 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, ski
             comp_video = comparison_path if show_comparison and os.path.exists(comparison_path) else None
             
             if res_video:
-                # Add to history
                 entry = {
                     "timestamp": timestamp,
                     "video": res_video,
@@ -84,14 +88,13 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, ski
 def get_history_html():
     history = load_history()
     if not history:
-        return "<p style='text-align: center;'>No history yet. Start a transformation to see results here!</p>"
+        return "<p style='text-align: center;'>No history yet.</p>"
     
     html = "<div style='display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px;'>"
     for entry in history:
         html += f"""
         <div style='border: 1px solid #ddd; padding: 10px; border-radius: 8px;'>
             <p><strong>{entry['timestamp']}</strong></p>
-            <p style='font-size: 0.8em;'>Prompt: {entry['prompt']}</p>
             <p style='font-size: 0.8em;'>Style: {entry['style']} | Lang: {entry['lang']}</p>
             <a href='file/{os.path.abspath(entry['video'])}' target='_blank' style='color: #2196F3;'>View Video</a>
         </div>
@@ -103,12 +106,13 @@ def get_history_html():
 with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎬 Local Video & Audio Transformer")
     
-    with gr.Tabs() as tabs:
+    with gr.Tabs():
         with gr.Tab("Transform"):
             with gr.Row():
                 with gr.Column(scale=1):
                     input_video = gr.Video(label="1. Input Video")
-                    input_ref_image = gr.Image(label="2. Reference Character Image", type="filepath")
+                    # Changed to File with file_count="multiple" to allow plural images
+                    input_ref_images = gr.File(label="2. Reference Character Images (Multiple allowed)", file_count="multiple", file_types=["image"])
                     input_ref_audio = gr.Audio(label="3. Reference Voice Audio (Optional)", type="filepath")
                     
                     with gr.Group():
@@ -131,20 +135,13 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
                     comparison_video = gr.Video(label="🎞 Side-by-Side Comparison")
                     status = gr.Textbox(label="Status", interactive=False)
                     
-                    gr.Markdown("""
-                    ### 💡 Tips
-                    - **Fast Mode**: Generates 8x faster.
-                    - **Visual Style**: Presets add high-quality tokens.
-                    - **Audio**: Use 5-15s of clean speech.
-                    """)
-        
         with gr.Tab("History"):
             history_display = gr.HTML(value=get_history_html())
             refresh_btn = gr.Button("🔄 Refresh History")
 
     run_btn.click(
         fn=transform_video,
-        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison],
+        inputs=[input_video, input_ref_images, input_ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison],
         outputs=[output_video, comparison_video, status, history_display]
     )
     
