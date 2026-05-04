@@ -1,43 +1,43 @@
 import os
-from audio_pipeline import AudioPipeline
-import moviepy as mp
+import sys
+from main import main as run_pipeline
+from unittest.mock import patch
 
-def run_demo():
-    print("=== Local Video & Audio Transformation Demo ===")
+def run_test():
+    print("=== Running End-to-End Functional Test ===")
     
-    # 1. Setup paths
+    # 1. Check for sample assets
     video_path = "samples/input_video.mp4"
     ref_image = "samples/ref_image.jpg"
-    output_audio = "samples/translated_audio.wav"
-    output_final = "final_demo_output.mp4"
+    ref_audio = "samples/ref_audio.flac"
     
-    # 2. Run Audio Pipeline (Functional)
-    print("\n[Phase 1] Running Audio Pipeline...")
-    audio_pipe = AudioPipeline(
-        asr_model_path="models/faster-whisper-small",
-        translation_model_path="models/opus-mt-en-es",
-        tts_model_path="models/Kokoro-82M/kokoro-v1.0.onnx",
-        tts_voices_path="models/Kokoro-82M/voices.bin"
-    )
+    if not all(os.path.exists(p) for p in [video_path, ref_image, ref_audio]):
+        print("Error: Missing sample assets in samples/ directory.")
+        return
+
+    # 2. Configure test arguments
+    output_path = "test_output.mp4"
+    args = [
+        "--video", video_path,
+        "--ref_image", ref_image,
+        "--ref_audio", ref_audio,
+        "--target_lang", "es",
+        "--prompt", "a portrait of a character",
+        "--output", output_path
+    ]
     
-    audio_pipe.process_video(video_path, output_audio, target_lang="es")
+    print(f"Executing: python main.py {' '.join(args)}")
     
-    # 3. Merge Audio with Original Video (Demo Result)
-    print("\n[Phase 2] Merging translated audio with video...")
-    video_clip = mp.VideoFileClip(video_path)
-    audio_clip = mp.AudioFileClip(output_audio)
-    
-    # Trim to match
-    final_duration = min(video_clip.duration, audio_clip.duration, 5.0) # 5s demo
-    video_clip = video_clip.with_duration(final_duration)
-    audio_clip = audio_clip.with_duration(final_duration)
-    
-    final_clip = video_clip.with_audio(audio_clip)
-    final_clip.write_videofile(output_final, codec="libx264", audio_codec="aac")
-    
-    print(f"\nDEMO COMPLETE: Final video generated at {output_final}")
-    print("The Visual Pipeline (Character Replacement) is implemented in visual_pipeline.py")
-    print("and can be run by providing full SD 1.5 weights in models/stable-diffusion-v1-5/")
+    # 3. Run the pipeline
+    with patch.object(sys, 'argv', ["main.py"] + args):
+        try:
+            run_pipeline()
+            if os.path.exists(output_path):
+                print(f"\nSUCCESS: Test passed. Generated {output_path}")
+            else:
+                print("\nFAILURE: Pipeline completed but output file is missing.")
+        except Exception as e:
+            print(f"\nFAILURE: Pipeline crashed with error: {str(e)}")
 
 if __name__ == "__main__":
-    run_demo()
+    run_test()

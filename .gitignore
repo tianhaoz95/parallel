@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+models/
+samples/
+*.mp4
+*.wav
+*.flac
+*.bin
+*.onnx
+*.safetensors
+transformed_output.mp4
+temp_*
