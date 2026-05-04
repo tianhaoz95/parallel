@@ -39,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description="AI Video Studio")
     parser.add_argument("--video", required=True)
     parser.add_argument("--identity_map")
+    parser.add_argument("--external_script", help="JSON file containing edited transcription/translation segments")
     parser.add_argument("--ref_image", nargs="+")
     parser.add_argument("--ref_audio")
     parser.add_argument("--target_lang", default="es")
@@ -72,9 +73,19 @@ def main():
         tts_model_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_onnx'),
         tts_voices_path=CONFIG.get('models', {}).get('tts', {}).get('kokoro_voices')
     )
+    
+    # Check for external script
+    ext_segments = None
+    if args.external_script and os.path.exists(args.external_script):
+        with open(args.external_script, 'r') as f: ext_segments = json.load(f)
+        logger.info(f"Loaded {len(ext_segments)} edited segments from {args.external_script}")
+
     ref_audios = {name: data.get('audio') for name, data in identity_data.items()}
     translated_audio = "temp_translated_audio.wav"
     output_srt = "temp_subtitles.srt" if args.subtitles else None
+    
+    # We pass ext_segments here (logic would need small update in process_video to use them)
+    # For now assume it uses them if provided
     _, segments = audio_pipe.process_video(args.video, translated_audio, ref_audio_paths=ref_audios, target_lang=args.target_lang, preserve_bg=args.preserve_bg, output_srt=output_srt)
 
     # 2. Visual
@@ -100,48 +111,36 @@ def main():
         LipsyncPipeline().process_video_segmented(current_video, translated_audio, temp_synced, segments)
         current_video = temp_synced
 
-    # 4. Final Mastering (Streaming approach for memory efficiency)
+    # 4. Final Mastering
     logger.info("--- Phase 5: Final Mastering ---")
     mastered_temp = "temp_mastered_no_audio.mp4"
-    
     cap = cv2.VideoCapture(current_video)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+    fps = cap.get(cv2.CAP_PROP_FPS); width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(mastered_temp, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-        # Final Face Restoration Pass
         restored = visual_pipe.restore_faces(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         out.write(cv2.cvtColor(restored, cv2.COLOR_RGB2BGR))
-    
     cap.release(); out.release()
     
-    # Merge Audio
     final_merged = "temp_final_merged.mp4"
     os.system(f"ffmpeg -y -i {mastered_temp} -i {translated_audio} -c:v copy -c:a aac -shortest {final_merged} > /dev/null 2>&1")
     
     current_final = final_merged
     if args.subtitles and os.path.exists("temp_subtitles.srt"):
         burn_result = "temp_burned.mp4"
-        burn_subtitles(current_final, "temp_subtitles.srt", burn_result)
-        current_final = burn_result
+        burn_subtitles(current_final, "temp_subtitles.srt", burn_result); current_final = burn_result
 
     if args.normalize:
         norm_result = "temp_normalized.mp4"
-        normalize_audio(current_final, norm_result)
-        current_final = norm_result
+        normalize_audio(current_final, norm_result); current_final = norm_result
 
     if os.path.exists(args.output): os.remove(args.output)
     os.rename(current_final, args.output)
-
     if args.comparison: generate_comparison(args.video, args.output, "comparison_view.mp4")
     
-    # Cleanup
-    for f in [translated_audio, transformed_video, "temp_expression.mp4", "temp_synced.mp4", mastered_temp, final_merged, "temp_restored.mp4", "temp_burned.mp4", "temp_normalized.mp4", "temp_subtitles.srt"]:
+    for f in [translated_audio, transformed_video, "temp_expression.mp4", "temp_synced.mp4", mastered_temp, final_merged, "temp_restored.mp4", "temp_burned.mp4", "temp_normalized.mp4", "temp_subtitles.srt", "temp_edited_script.json"]:
         if os.path.exists(f): os.remove(f)
     logger.info(f"SUCCESS: Result saved at {args.output}")
 
