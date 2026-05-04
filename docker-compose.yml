@@ -1,0 +1,20 @@
+services:
+  video-transformer:
+    build: .
+    container_name: video-transformer
+    volumes:
+      - .:/app
+      - ./models:/app/models
+    ports:
+      - "7860:7860"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+    stdin_open: true
+    tty: true

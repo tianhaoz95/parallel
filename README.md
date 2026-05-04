@@ -48,7 +48,14 @@ python3 app.py
 ```
 Then open `http://localhost:7860` in your browser.
 
-### Option 2: CLI Tool
+### Option 2: Docker (Easiest for setup)
+Run the entire system in a container with all dependencies pre-configured.
+```bash
+docker-compose up --build
+```
+*(Requires NVIDIA Container Toolkit installed)*
+
+### Option 3: CLI Tool
 For batch processing or automation:
 
 
