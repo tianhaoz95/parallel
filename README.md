@@ -26,20 +26,13 @@ A local, end-to-end pipeline for transforming video content using state-of-the-a
    cd parallel
    ```
 
-2. **Create Virtual Environment**:
+2. **Run Setup Script**:
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -r requirements.txt
+   chmod +x setup.sh
+   ./setup.sh
    ```
-   *(Note: Base dependencies are already installed if you are using the provided environment)*.
+   This will create a virtual environment, install dependencies, and download all models.
 
-3. **Download Models**:
-   The models are automatically managed, but you can trigger the download by running:
-   ```bash
-   # See demo.py or main.py for details on model paths
-   ```
 ## Usage
 
 ### Option 1: Web Interface (Recommended)
@@ -59,19 +52,31 @@ docker-compose up --build
 
 ### Option 3: CLI Tool
 For batch processing or automation:
-
+```bash
+source .venv/bin/activate
+python3 main.py --video samples/input_video.mp4 \
+                --ref_image samples/ref_image.jpg \
+                --ref_audio samples/ref_audio.flac \
+                --target_lang es \
+                --output transformation_result.mp4
+```
 
 ### Options
 - `--video`: Path to the source MP4 video.
 - `--ref_image`: Path to the reference image of the character to replace with.
-- `--target_lang`: Target language code (e.g., `es` for Spanish, `fr` for French, `de` for German).
-- `--prompt`: Text description to guide the diffusion model (important for lighting/style).
+- `--ref_audio`: Path to the reference audio for zero-shot voice cloning.
+- `--target_lang`: Target language code (e.g., `es`, `fr`, `de`, `zh`).
+- `--prompt`: Text description to guide the diffusion model.
 - `--output`: Path to save the final video.
+- `--skip_lipsync`: Skip the high-res lipsync pass (faster).
+- `--no_preserve_bg`: Do not use Demucs to preserve background music.
 
 ## Project Structure
 - `main.py`: The entry point for the full pipeline.
-- `audio_pipeline.py`: Handles ASR, Translation, and TTS.
-- `visual_pipeline.py`: Handles character replacement using IP-Adapter.
+- `app.py`: The Gradio Web UI.
+- `audio_pipeline.py`: Handles ASR, Translation, Source Separation, and Zero-Shot Cloning.
+- `visual_pipeline.py`: Handles character replacement and face restoration.
+- `lipsync_pipeline.py`: Handles lip-syncing using Wav2Lip ONNX.
 - `models/`: Local storage for all ML weights.
 - `samples/`: Test assets.
 
@@ -96,3 +101,6 @@ For batch processing or automation:
 - **Out of Memory (OOM)**: If you run out of VRAM, try closing other GPU-heavy apps or reducing the resolution in `visual_pipeline.py`.
 - **ffmpeg errors**: Ensure `static-ffmpeg` is correctly installed. The script automatically handles paths, but sometimes a manual `source .venv/bin/activate` is required.
 - **Indentation/Python errors**: Ensure you are using Python 3.12+ as specified in the requirements.
+
+## 📄 License
+This project is licensed under the MIT License. Note that the individual ML models used (Stable Diffusion, F5-TTS, etc.) are subject to their own respective licenses.
