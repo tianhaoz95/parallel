@@ -8,6 +8,7 @@ from lipsync_pipeline import LipsyncPipeline
 from expression_pipeline import FacialExpressionPipeline
 from logger_utils import logger, CONFIG
 from check_gpu import verify_gpu
+from adaptive_loader import HardwareAdaptiveLoader
 
 def generate_comparison(input_video, transformed_video, output_path):
     logger.info("Generating side-by-side comparison video...")
@@ -18,6 +19,10 @@ def generate_comparison(input_video, transformed_video, output_path):
     clip1.close(); clip2.close()
 
 def main():
+    # 0. Hardware-Adaptive Optimization
+    logger.info("Optimizing pipeline for local hardware...")
+    _ = HardwareAdaptiveLoader.apply_optimizations()
+    
     if not verify_gpu():
         logger.error("Incompatible hardware detected. Aborting.")
         return
@@ -85,18 +90,16 @@ def main():
 
     if not args.skip_lipsync:
         logger.info("--- Phase 4: Targeted Lipsync ---")
-        # Map character image for every segment for identity-aware sync
         for s in segments:
             char_name = f"Character_{s['speaker_id']}"
             if char_name in visual_map and visual_map[char_name]:
                 s['target_embedding'] = visual_map[char_name][0]
-
         ls_pipe = LipsyncPipeline()
         temp_synced = "temp_synced.mp4"
         ls_pipe.process_video_segmented(current_video, translated_audio, temp_synced, segments)
         current_video = temp_synced
 
-    # 4. Final Final Restoration
+    # 4. Final HD Restoration
     logger.info("--- Phase 5: Final HD Restoration ---")
     clip = mp.VideoFileClip(current_video)
     final_clip = clip.fl_image(lambda frame: visual_pipe.restore_faces(frame))
