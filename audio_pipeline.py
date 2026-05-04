@@ -33,7 +33,7 @@ class AudioPipeline:
         else: self.kokoro = None
 
     def _load_translation_model(self, source_lang, target_lang):
-        if self.use_llm: return # Handled by LLM class
+        if self.use_llm: return
         pair = f"{source_lang}-{target_lang}"
         local_path = f"{self.model_prefix}{pair}"
         if not os.path.exists(local_path):
@@ -41,6 +41,15 @@ class AudioPipeline:
             snapshot_download(repo_id=f"Helsinki-NLP/opus-mt-{pair}", local_dir=local_path)
         self.marian_tokenizer = MarianTokenizer.from_pretrained(local_path)
         self.marian_model = MarianMTModel.from_pretrained(local_path).to(self.device)
+
+    def translate_text(self, text, source_lang, target_lang):
+        if self.use_llm:
+            if not hasattr(self, 'llm_translator') or self.llm_translator is None:
+                self.llm_translator = LLMTranslationPipeline()
+            return self.llm_translator.translate(text, source_lang, target_lang)
+        inputs = self.marian_tokenizer(text, return_tensors="pt").to(self.device)
+        tokens = self.marian_model.generate(**inputs)
+        return self.marian_tokenizer.decode(tokens[0], skip_special_tokens=True)
 
     def transcribe_audio(self, audio_path, detect_language=False):
         segments, info = self.asr_model.transcribe(audio_path, beam_size=5)
@@ -57,7 +66,6 @@ class AudioPipeline:
         return os.path.join(output_dir, "htdemucs", base_name, "vocals.wav"), os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
 
     def synthesize_segment(self, text, ref_audio_path, ref_text, output_path, emotion_tag="", speed=1.0):
-        # F5-TTS supports emotion tags in the text
         full_text = f"{emotion_tag} {text}" if emotion_tag else text
         if ref_audio_path:
             wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=full_text)
@@ -67,9 +75,11 @@ class AudioPipeline:
             sf.write(output_path, samples, sr)
         return output_path
 
-    def process_video(self, video_path, output_audio_path, ref_audio_paths=None, target_lang="es", preserve_bg=True, output_srt=None):
-        logger.info(f"Processing audio with Emotion-Aware synthesis...")
-        visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=10.0)
+    def process_video(self, video_path, output_audio_path, ref_audio_paths=None, target_lang="es", preserve_bg=True, output_srt=None, external_segments=None):
+        """
+        Processes audio using either automated pipeline or provided external_segments.
+        """
+        logger.info(f"Processing audio for {video_path}")
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
         video.audio.write_audiofile(temp_source_audio, logger=None)
@@ -80,34 +90,58 @@ class AudioPipeline:
             try: vocal_track, background_track = self.separate_audio(temp_source_audio)
             except: pass
         
-        _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
-        
+        if external_segments:
+            logger.info("Using provided external script segments.")
+            segments = external_segments
+        else:
+            logger.info("Running automated transcription and translation...")
+            _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
+            
+            if detected_lang != target_lang:
+                self._load_translation_model(detected_lang, target_lang)
+                for s in segments:
+                    s['translated_text'] = self.translate_text(s['text'], detected_lang, target_lang)
+            else:
+                for s in segments: s['translated_text'] = s['text']
+
+        # Speaker mapping (if not already mapped in external script)
+        if 'speaker_id' not in segments[0]:
+            visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=10.0)
+            for s in segments:
+                start, end = s['start'], s['end']
+                max_act = -1; best_sp = 0
+                for sp_id, act in visual_activity.items():
+                    seg_act = [v for t, v in act if start <= t <= end]
+                    if seg_act and sum(seg_act)/len(seg_act) > max_act:
+                        max_act = sum(seg_act)/len(seg_act); best_sp = sp_id
+                s['speaker_id'] = best_sp
+
+        # Subtitles
+        if output_srt:
+            subs = pysubs2.SSAFile()
+            for s in segments:
+                subs.append(pysubs2.SSAEvent(start=int(s['start']*1000), end=int(s['end']*1000), text=s.get('translated_text', s['text'])))
+            subs.save(output_srt)
+
+        # Synthesis
+        logger.info("Synthesizing final segments...")
         audio_clips = []
         os.makedirs("temp_segments", exist_ok=True)
-        
         for i, s in enumerate(segments):
-            # 1. Map to speaker
-            start, end = s['start'], s['end']
-            max_act = -1; best_sp = 0
-            for sp_id, act in visual_activity.items():
-                seg_act = [v for t, v in act if start <= t <= end]
-                if seg_act and sum(seg_act)/len(seg_act) > max_act:
-                    max_act = sum(seg_act)/len(seg_act); best_sp = sp_id
-            
-            # 2. Extract emotion of original segment
             y, sr = librosa.load(vocal_track, offset=s['start'], duration=s['end']-s['start'])
             temp_seg_orig = f"temp_segments/orig_{i}.wav"
             sf.write(temp_seg_orig, y, sr)
             emotion = self.emotion_analyzer.analyze_audio(temp_seg_orig)
             
-            # 3. Synthesis with emotion tag
-            current_ref = ref_audio_paths.get(f"Character_{best_sp}") if isinstance(ref_audio_paths, dict) else None
+            # Use specific speaker reference
+            sp_name = f"Character_{s['speaker_id']}"
+            current_ref = ref_audio_paths.get(sp_name) if isinstance(ref_audio_paths, dict) else None
             ref_text = ""
             if current_ref: ref_text, _ = self.transcribe_audio(current_ref)
             
             seg_path = f"temp_segments/seg_{i}.wav"
-            self.synthesize_segment(s['text'], current_ref, ref_text, seg_path, emotion_tag=emotion['tag'] if emotion else "", speed=emotion['speed'] if emotion else 1.0)
-            
+            text_to_synth = s.get('translated_text', s['text'])
+            self.synthesize_segment(text_to_synth, current_ref, ref_text, seg_path, emotion_tag=emotion['tag'] if emotion else "", speed=emotion['speed'] if emotion else 1.0)
             audio_clips.append(mp.AudioFileClip(seg_path).set_start(s['start']))
 
         final_audio = mp.CompositeAudioClip(audio_clips)

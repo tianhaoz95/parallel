@@ -80,13 +80,19 @@ def main():
         with open(args.external_script, 'r') as f: ext_segments = json.load(f)
         logger.info(f"Loaded {len(ext_segments)} edited segments from {args.external_script}")
 
-    ref_audios = {name: data.get('audio') for name, data in identity_data.items()}
     translated_audio = "temp_translated_audio.wav"
     output_srt = "temp_subtitles.srt" if args.subtitles else None
     
     # We pass ext_segments here (logic would need small update in process_video to use them)
-    # For now assume it uses them if provided
-    _, segments = audio_pipe.process_video(args.video, translated_audio, ref_audio_paths=ref_audios, target_lang=args.target_lang, preserve_bg=args.preserve_bg, output_srt=output_srt)
+    _, segments = audio_pipe.process_video(
+        args.video, 
+        translated_audio, 
+        ref_audio_paths=ref_audios, 
+        target_lang=args.target_lang, 
+        preserve_bg=args.preserve_bg, 
+        output_srt=output_srt,
+        external_segments=ext_segments
+    )
 
     # 2. Visual
     logger.info("--- Phase 2: Visual Transformation ---")
