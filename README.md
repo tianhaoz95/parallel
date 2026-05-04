@@ -1,120 +1,106 @@
-# Local Video Character Replacement & Audio Translation
+# 🎬 Local Video Character Studio
 
-A local, end-to-end pipeline for transforming video content using state-of-the-art machine learning models. This project allows you to replace a character in a video with a person from a reference image and translate the audio into another language while maintaining vocal characteristics.
+A professional-grade, local, end-to-end pipeline for transforming video content using state-of-the-art AI. Replace characters in videos with reference identities and translate audio with zero-shot voice cloning.
 
-## Features
-- **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** and **IP-Adapter Plus**.
-- **Fast Mode**: Supports **LCM (Latency Consistency Models)** for a **4x-8x speedup** in video generation.
-- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces.
-- **Audio Pipeline**: 
-    - **Transcription**: Powered by `faster-whisper`.
-    - **Translation**: Uses `MarianMT` (Opus-MT) models for high-quality local translation.
-    - **Zero-Shot Voice Cloning**: Powered by **F5-TTS** to clone voices from a 5-15s reference recording.
-    - **Atmosphere Preservation**: Uses **Demucs** audio source separation to preserve original background music and sound effects.
-- **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** to synchronize the new character's lips.
-- **Automatic Subtitles**: Generates synchronized **SRT files** and optional captions in the target language.
-- **Comparison View**: Generates a **Side-by-Side comparison video** showing the original vs. transformed results.
-- **Result Gallery**: Tracks transformation **history** and parameters across sessions in the Web UI.
-- **Automatic Orchestration**: Unified CLI tool and Gradio Web UI that handle the entire process.
+## 🌟 Key Features
+- **Identity-Aware Replacement**: Replace specific individuals in multi-person scenes using **IP-Adapter Plus** and **DeepFace**.
+- **Skeleton-Guided Motion**: Uses **DWPose** to perfectly transfer actor motion to the replacement character while isolating the background.
+- **Zero-Shot Voice Cloning**: Clone any voice from a 10s sample using **F5-TTS**, with **automatic emotion transfer**.
+- **Multilingual Support**: **Automatic language detection** and dynamic translation via **Llama 3** or **MarianMT**.
+- **Studio Quality**: Automatic **GFPGAN** face restoration, **Real-ESRGAN** HD upscaling, and **Demucs** background music preservation.
+- **Precision Sync**: High-resolution lip-synchronization via **Wav2Lip 256 ONNX**.
+- **Professional Workflow**: Interactive script editor, persistent identity library, and project serialization.
 
-## Requirements
-- **Hardware**: NVIDIA GPU with 12GB+ VRAM (RTX 3060 or higher). 24GB VRAM (RTX 3090/4090) recommended for best performance.
-- **Operating System**: Linux (Ubuntu 22.04+ recommended).
-- **Drivers**: NVIDIA Driver 550+ and CUDA 12.x+.
+---
 
-## Setup
+## 🛠 Prerequisites
+- **Hardware**: NVIDIA GPU (RTX 30xx/40xx/Blackwell) with **12GB+ VRAM** (24GB recommended).
+- **OS**: Linux (Ubuntu 22.04+) or Windows 10/11.
+- **Software**: Python 3.12, CUDA 12.1+.
 
-1. **Clone the repository**:
+---
+
+## 🚀 Quick Start (Linux/WSL)
+
+1. **Clone & Setup**:
    ```bash
    git clone <repo-url>
    cd parallel
-   ```
-
-2. **Run Setup Script**:
-   ```bash
    chmod +x setup.sh
    ./setup.sh
    ```
-   This will create a virtual environment, install dependencies, and download all models.
 
-## Usage
+2. **Download Sample Assets**:
+   ```bash
+   ./samples/download_samples.sh
+   ```
 
-### Option 1: Web Interface (Recommended)
-A user-friendly Gradio web interface is provided for easier interaction.
+3. **Launch the Studio (Web UI)**:
+   ```bash
+   source .venv/bin/activate
+   python3 app.py
+   ```
+   Open `http://localhost:7860` in your browser.
+
+---
+
+## 🚀 Quick Start (Windows)
+
+1. **Setup**: Double-click `setup.bat` to install dependencies and models.
+2. **Launch**:
+   ```cmd
+   call .venv\Scripts\activate.bat
+   python app.py
+   ```
+
+---
+
+## 📖 How to Use the Studio
+
+### 1. Identity Discovery (Multi-Character Workflow)
+- Upload your video in the **Identity Discovery** tab.
+- Click **"Discover Characters"**. The system will scan the video and show thumbnails of Every unique person found.
+- (Optional) Name the character and click **"Save to Library"** to reuse this identity in future videos.
+
+### 2. Character Mapping
+- For Every discovered person, upload the **Replacement Images** and a **Replacement Voice** sample.
+- If you recognize a character from your library, they will be auto-mapped!
+
+### 3. Production & Rendering
+- Go to the **Production** tab.
+- Choose your **Target Language** and **Visual Style Preset** (e.g., Cinematic, Animated).
+- Toggle **Fast Mode (LCM)** if you want an 8x speed boost.
+- Click **"Start Production"**. Monitor real-time progress via the status bar.
+
+---
+
+## 💻 CLI Usage (Automation)
+For batch processing, use `main.py`:
 ```bash
-source .venv/bin/activate
-python3 app.py
-```
-Then open `http://localhost:7860` in your browser.
-
-### Option 2: Docker
-Run the entire system in a container with all dependencies pre-configured.
-```bash
-docker-compose up --build
-```
-*(Requires NVIDIA Container Toolkit installed)*
-
-### Option 3: CLI Tool
-For batch processing or automation:
-```bash
-source .venv/bin/activate
-python3 main.py --video samples/input_video.mp4 \
-                --ref_image samples/ref_image.jpg \
-                --ref_audio samples/ref_audio.flac \
+python3 main.py --video input.mp4 \
+                --identity_map project_config.json \
                 --target_lang es \
-                --output transformation_result.mp4
+                --output final_dub.mp4 \
+                --upscale --subtitles
 ```
 
-### Option 4: Testing
-Run unit tests to verify pipeline integrity:
-```bash
-source .venv/bin/activate
-PYTHONPATH=. pytest tests/
-```
+---
 
-### Options
-- `--video`: Path to the source MP4 video.
-- `--ref_image`: Path to the reference image of the character to replace with.
-- `--ref_audio`: Path to the reference audio for zero-shot voice cloning.
-- `--target_lang`: Target language code (e.g., `es`, `fr`, `de`, `zh`).
-- `--prompt`: Text description to guide the diffusion model.
-- `--output`: Path to save the final video.
-- `--skip_lipsync`: Skip the high-res lipsync pass (faster).
-- `--no_preserve_bg`: Do not use Demucs to preserve background music.
-- `--subtitles`: Generate synchronized SRT subtitle files.
-- `--comparison`: Generate a side-by-side comparison video.
+## 📂 Project Structure
+- `app.py`: Browser-based studio interface.
+- `main.py`: Core pipeline orchestration.
+- `identity_library/`: Persistent character profiles.
+- `projects/`: Saved production setups (.avt files).
+- `models/`: Local storage for 10+ ML model weights.
 
-## Project Structure
-- `main.py`: The entry point for the full pipeline.
-- `app.py`: The Gradio Web UI.
-- `audio_pipeline.py`: Handles ASR, Translation, Source Separation, and Zero-Shot Cloning.
-- `visual_pipeline.py`: Handles character replacement and face restoration.
-- `lipsync_pipeline.py`: Handles lip-syncing using Wav2Lip ONNX.
-- `models/`: Local storage for all ML weights.
-- `samples/`: Test assets.
-- `tests/`: Unit tests for the pipelines.
+---
 
-## Implementation Details
-- **Temporal Consistency**: Handled via ControlNet structure guidance at every frame.
-- **VRAM Management**: Uses `enable_model_cpu_offload()` and FP16/CPU-mixed precision to fit into consumer GPUs (12GB+).
-- **Zero-Shot Transfer**: Visuals use IP-Adapter Plus; Audio uses F5-TTS for high-fidelity zero-shot voice cloning.
+## 🧪 Testing & Engineering
+- **Unit Tests**: `make test`
+- **Benchmarking**: `make benchmark`
+- **Containerization**: `docker-compose up --build`
 
-## 💡 Tips for High-Quality Results
-
-### 🖼 Visuals
-- **Prompt Engineering**: The `--prompt` is critical. Use descriptions like "cinematic lighting", "high resolution", and "matching environment" to help the diffusion model blend the character into the scene.
-- **Reference Image**: Use a clear, front-facing portrait with neutral lighting for the best IP-Adapter results.
-- **Motion**: ControlNet Canny works best with clear, high-contrast video. If the video is too dark, try brightening it before processing.
-
-### 🎙 Audio
-- **Reference Audio**: Use 5-15 seconds of clean speech (no background music/noise).
-- **Zero-Shot Accuracy**: If the cloned voice sounds "electronic", try a longer reference recording or ensure the transcription of the reference (handled automatically) is accurate.
-- **Language**: MarianMT supports many language pairs. The default is `es` (Spanish), but you can change it to `fr`, `de`, `it`, etc., provided the model is downloaded.
-
-## 🔧 Troubleshooting
-- **Out of Memory (OOM)**: If you run out of VRAM, try closing other GPU-heavy apps or reducing the resolution in `visual_pipeline.py`.
-- **ffmpeg errors**: Ensure `static-ffmpeg` is correctly installed. The script automatically handles paths, but sometimes a manual `source .venv/bin/activate` is required.
-- **Indentation/Python errors**: Ensure you are using Python 3.12+ as specified in the requirements.
+---
 
 ## 📄 License
-This project is licensed under the MIT License. Note that the individual ML models used (Stable Diffusion, F5-TTS, etc.) are subject to their own respective licenses.
+MIT License. Individual models (Stable Diffusion, F5-TTS, etc.) are subject to their respective licenses.
