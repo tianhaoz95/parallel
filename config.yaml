@@ -23,6 +23,12 @@ defaults:
   num_inference_steps: 15
   restore_face: true
   preserve_bg: true
+  use_lcm: false # Set to true for 4-8x speedup
+
+# Optimization Settings
+optimizations:
+  lcm_lora: "models/lcm-lora-sdv1-5"
+  low_vram: true
 
 # System Settings
 logging:

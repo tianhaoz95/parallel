@@ -3,15 +3,15 @@ import gradio as gr
 from main import main as run_pipeline
 import sys
 from unittest.mock import patch
-from logger_utils import logger
+from logger_utils import logger, CONFIG
 
-def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, progress=gr.Progress()):
+def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, progress=gr.Progress()):
     if video is None or ref_image is None:
         return None, "Error: Video and Reference Image are required."
     
     output_path = "transformed_output.mp4"
     
-    # Prepare arguments for main.py's main function
+    # Prepare arguments
     args = [
         "--video", video,
         "--ref_image", ref_image,
@@ -27,26 +27,17 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
     if not preserve_bg:
         args.append("--no_preserve_bg")
         
-    logger.info(f"UI initiating transformation with args: {args}")
+    # We update the global CONFIG for this run (simple way to pass to pipeline)
+    CONFIG['defaults']['use_lcm'] = use_lcm
     
-    # Progress tracking logic (we'll use a mocked sys.stdout or just broad steps)
+    logger.info(f"UI initiating transformation. LCM: {use_lcm}, Args: {args}")
     progress(0, desc="🚀 Starting Pipeline...")
     
-    # Map steps for the progress bar
-    progress(0.1, desc="🎙 Processing Audio (ASR & Translation)...")
-    
-    # We use a trick to call main() with our args
     with patch.object(sys, 'argv', ["main.py"] + args):
         try:
-            # Note: For granular progress, we would need to refactor main.py 
-            # to accept a callback. For now, we simulate the major phases.
-            progress(0.3, desc="🖼 Character Replacement (Visual Pipeline)...")
-            
+            progress(0.1, desc="🎙 Processing Audio...")
+            # Granular progress would require refactoring main.py, but this gives feedback
             run_pipeline()
-            
-            if not skip_lipsync:
-                progress(0.7, desc="👄 Synchronizing Lips (Lipsync Pass)...")
-                progress(0.9, desc="✨ Finalizing & Restoring Faces...")
             
             if os.path.exists(output_path):
                 progress(1.0, desc="✅ Success!")
@@ -54,13 +45,12 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
             else:
                 return None, "Error: Transformation failed to generate output."
         except Exception as e:
-            logger.error(f"UI Transformation Error: {str(e)}")
-            return None, f"Error during transformation: {str(e)}"
+            logger.error(f"UI Error: {str(e)}")
+            return None, f"Error: {str(e)}"
 
 # Define the UI
 with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎬 Local Video & Audio Transformer")
-    gr.Markdown("Replace characters in video and translate audio with zero-shot voice cloning.")
     
     with gr.Row():
         with gr.Column(scale=1):
@@ -71,19 +61,13 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
             with gr.Group():
                 gr.Markdown("### ⚙️ Settings")
                 with gr.Row():
-                    target_lang = gr.Dropdown(
-                        choices=["es", "fr", "de", "it", "zh"], 
-                        value="es", 
-                        label="Target Language"
-                    )
-                    prompt = gr.Textbox(
-                        value="a portrait of a beautiful character", 
-                        label="Visual Prompt"
-                    )
+                    target_lang = gr.Dropdown(choices=["es", "fr", "de", "it", "zh"], value="es", label="Target Language")
+                    prompt = gr.Textbox(value="a portrait of a beautiful character", label="Visual Prompt")
             
             with gr.Row():
-                skip_lipsync = gr.Checkbox(label="Skip Lip-Sync (Faster)", value=False)
-                preserve_bg = gr.Checkbox(label="Preserve BGM (Demucs)", value=True)
+                use_lcm = gr.Checkbox(label="🚀 Fast Mode (LCM)", value=False)
+                skip_lipsync = gr.Checkbox(label="Skip Lip-Sync", value=False)
+                preserve_bg = gr.Checkbox(label="Preserve BGM", value=True)
                 
             run_btn = gr.Button("🚀 Start Transformation", variant="primary", size="lg")
             
@@ -93,14 +77,14 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
             
             gr.Markdown("""
             ### 💡 Tips
-            - **Visuals**: Use a clear, front-facing reference image.
-            - **Audio**: Use 5-15s of clean speech for the best cloning result.
-            - **Hardware**: This process is heavy and requires an NVIDIA GPU with 12GB+ VRAM.
+            - **Fast Mode (LCM)**: Generates 8x faster but may have slightly less detail.
+            - **Visuals**: Use a high-quality portrait for the best results.
+            - **Audio**: Use clean speech for cloning.
             """)
 
     run_btn.click(
         fn=transform_video,
-        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg],
+        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm],
         outputs=[output_video, status]
     )
 

@@ -3,18 +3,30 @@ import torch
 import cv2
 import numpy as np
 from PIL import Image
-from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, UniPCMultistepScheduler
+from diffusers import (
+    StableDiffusionControlNetImg2ImgPipeline, 
+    ControlNetModel, 
+    UniPCMultistepScheduler,
+    LCMScheduler
+)
 from transformers import CLIPVisionModelWithProjection
 import moviepy.editor as mp
 from gfpgan import GFPGANer
-from logger_utils import logger
+from logger_utils import logger, CONFIG
 
 class VisualPipeline:
     def __init__(self, 
-                 sd_model_path="models/stable-diffusion-v1-5-pretrained", 
-                 controlnet_path="models/sd-controlnet-canny",
-                 image_encoder_path="models/image_encoder_H14",
-                 ip_adapter_path="models/IP-Adapter_plus"):
+                 sd_model_path=None, 
+                 controlnet_path=None,
+                 image_encoder_path=None,
+                 ip_adapter_path=None):
+        
+        # Use config defaults if not provided
+        cfg = CONFIG.get('models', {}).get('visual', {})
+        sd_model_path = sd_model_path or cfg.get('stable_diffusion')
+        controlnet_path = controlnet_path or cfg.get('controlnet_canny')
+        image_encoder_path = image_encoder_path or cfg.get('image_encoder')
+        ip_adapter_path = ip_adapter_path or cfg.get('ip_adapter')
         
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
@@ -22,17 +34,14 @@ class VisualPipeline:
         logger.info(f"Initializing Visual Pipeline on {self.device}")
         
         # 1. Load Image Encoder
-        logger.info(f"Loading Image Encoder from {image_encoder_path}...")
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
             image_encoder_path, torch_dtype=self.dtype
         ).to(self.device)
         
         # 2. Load ControlNet
-        logger.info(f"Loading ControlNet from {controlnet_path}...")
         self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
         
         # 3. Load SD Pipeline
-        logger.info(f"Loading Stable Diffusion from {sd_model_path}...")
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
             sd_model_path, 
             controlnet=self.controlnet, 
@@ -41,21 +50,30 @@ class VisualPipeline:
             safety_checker=None, 
             feature_extractor=None
         )
-        self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         
-        # 4. Load IP-Adapter Plus
+        # 4. Optimization: LCM Support
+        self.use_lcm = CONFIG.get('defaults', {}).get('use_lcm', False)
+        if self.use_lcm:
+            logger.info("Enabling LCM (Latency Consistency Model) speedup...")
+            lcm_lora_id = CONFIG.get('optimizations', {}).get('lcm_lora', "latent-consistency/lcm-lora-sdv1-5")
+            self.pipe.load_lora_weights(lcm_lora_id)
+            self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
+        else:
+            self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
+        
+        # 5. Load IP-Adapter Plus
         logger.info("Loading IP-Adapter Plus weights...")
         self.pipe.load_ip_adapter(
             os.path.join(ip_adapter_path, "models"), 
             subfolder="", 
             weight_name="ip-adapter-plus_sd15.bin"
         )
-        self.pipe.set_ip_adapter_scale(0.7)
+        self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
         
-        # 5. Load GFPGAN
+        # 6. Load GFPGAN
         logger.info("Loading GFPGAN for face restoration...")
         self.face_restorer = GFPGANer(
-            model_path='models/GFPGANv1.4.pth',
+            model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'),
             upscale=1,
             arch='clean',
             channel_multiplier=2,
@@ -63,7 +81,10 @@ class VisualPipeline:
         )
         
         if self.device == "cuda":
-            self.pipe.enable_model_cpu_offload()
+            if CONFIG.get('optimizations', {}).get('low_vram', True):
+                self.pipe.enable_model_cpu_offload()
+            else:
+                self.pipe.to(self.device)
 
     def get_canny_image(self, image):
         image = np.array(image)
@@ -82,13 +103,18 @@ class VisualPipeline:
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
         
+        # Adjust steps for LCM
+        num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
+        guidance_scale = 1.0 if self.use_lcm else 7.5
+        
         output = self.pipe(
             prompt=prompt,
             image=pil_frame,
             ip_adapter_image=ref_image,
             control_image=canny_image,
-            strength=0.6, 
-            num_inference_steps=15
+            strength=CONFIG.get('defaults', {}).get('sd_strength', 0.6), 
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale
         ).images[0]
         
         res_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
@@ -101,13 +127,12 @@ class VisualPipeline:
         clip = mp.VideoFileClip(video_path)
         ref_image = Image.open(ref_image_path).convert("RGB").resize((224, 224))
         
-        # Demo duration
         test_duration = min(clip.duration, 0.5)
         logger.info(f"Running character replacement on first {test_duration} seconds...")
         
         frames = []
-        count = 0
         fps = clip.fps
+        count = 0
         for frame in clip.iter_frames():
             if count / fps > test_duration:
                 break

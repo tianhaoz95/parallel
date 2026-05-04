@@ -3,8 +3,9 @@
 A local, end-to-end pipeline for transforming video content using state-of-the-art machine learning models. This project allows you to replace a character in a video with a person from a reference image and translate the audio into another language while maintaining vocal characteristics.
 
 ## Features
-- **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** and **IP-Adapter Plus** to replace people in videos based on a reference image.
-- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces in every frame (applied post-lipsync for maximum clarity).
+- **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** and **IP-Adapter Plus**.
+- **Fast Mode**: Supports **LCM (Latency Consistency Models)** for a **4x-8x speedup** in video generation.
+- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces.
 - **Audio Pipeline**: 
     - **Transcription**: Powered by `faster-whisper`.
     - **Translation**: Uses `MarianMT` (Opus-MT) models for high-quality local translation.
