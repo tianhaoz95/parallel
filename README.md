@@ -42,6 +42,12 @@ A professional-grade, local, end-to-end pipeline for transforming video content 
    ```
    Open `http://localhost:7860` in your browser.
 
+### 🌐 Remote Access
+To access the UI from another machine on your local network:
+1. Find the server's IP address (run `hostname -I` on Linux or `ipconfig` on Windows).
+2. On your other machine, navigate to `http://<server-ip>:7860`.
+3. The server is pre-configured to listen on `0.0.0.0`.
+
 ---
 
 ## 🚀 Quick Start (Windows)
