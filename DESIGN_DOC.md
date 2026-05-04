@@ -1,62 +1,65 @@
 # Design Document: Local Video Character Replacement & Audio Translation System
 
 ## 1. Introduction
-This project aims to develop a local, end-to-end pipeline for transforming video content. The two primary objectives are:
+This project delivers a local, end-to-end pipeline for transforming video content. The two primary objectives are:
 1.  **Visual Character Replacement**: Replacing characters in a video with a person from a reference image while maintaining motion and environmental consistency.
 2.  **Audio Translation & Style Transfer**: Translating the soundtrack into a target language while adopting the vocal characteristics (timbre, style) of a reference audio recording.
 
 ## 2. System Architecture
-The system is divided into two main pipelines: the **Visual Pipeline** and the **Audio Pipeline**. Both are designed to run locally on consumer-grade high-end hardware.
+The system consists of three modular pipelines orchestrated by a central Python script or Gradio Web UI.
 
 ### 2.1 Visual Pipeline (Character Replacement)
-The goal is to replace a character's appearance while preserving the original video's motion, lighting, and interactions.
+The visual pipeline replaces characters frame-by-frame while preserving structure and motion.
 
-#### Proposed Models:
-*   **Wan-Animate (Wan2.2-Animate)**: Used for full character replacement. It excels at maintaining temporal stability and matching the scene's lighting to the new character.
-*   **FaceFusion / ReActor**: Used as a secondary pass for high-fidelity face swapping and facial detail enhancement (using GFPGAN or CodeFormer).
-*   **LivePortrait**: Used for refined facial expressions and potential lip-syncing of the translated audio.
-
-#### Workflow:
-1.  **Preprocessing**: Extract frames and identify/mask the target character.
-2.  **Motion Extraction**: Use models like OpenPose or ControlNet (if not using end-to-end models like Wan-Animate) to track the character's movement.
-3.  **Character Generation**: Feed the reference image and motion data into **Wan-Animate** to generate the replacement character.
-4.  **Face Refinement**: Apply **FaceFusion** or **ReActor** on the generated frames to ensure the face perfectly matches the reference image with high clarity.
-5.  **Compositing**: Re-integrate the character into the original environment if they were processed separately.
-
-### 2.2 Audio Pipeline (Translation & Style Transfer)
-The goal is to translate the speech and clone the target voice style.
-
-#### Proposed Models:
-*   **Faster-Whisper**: For high-speed, accurate Automatic Speech Recognition (ASR).
-*   **GPT-4o (Local via Ollama/Llama 3)**: For high-quality text-to-text translation.
-*   **Fish Speech V1.5 / XTTS v2**: For cross-lingual Text-to-Speech (TTS) with zero-shot voice cloning.
-*   **Seed-VC**: For optional voice-to-voice style transfer to further refine the output if the TTS output needs more character.
+#### Implemented Models:
+*   **Stable Diffusion 1.5**: The core generative engine.
+*   **ControlNet Canny**: Extracts the structural edges from the original video to ensure the replacement character follows the exact same motion and pose.
+*   **IP-Adapter Plus (ViT-H/14)**: Extracts semantic facial and clothing features from the reference image and injects them into the diffusion process for accurate character replacement.
 
 #### Workflow:
-1.  **Transcription**: Use **Faster-Whisper** to convert source audio to text with timestamps.
-2.  **Translation**: Use a local LLM (e.g., **Llama 3**) to translate the text into the target language.
-3.  **Style Extraction**: Analyze the **Reference Audio Recording** to extract a voice embedding (style/timbre).
-4.  **Speech Synthesis**: Use **Fish Speech** or **XTTS v2** to generate the translated text using the extracted voice embedding.
-5.  **Lip-Syncing (Bridge)**: Use **LivePortrait** or **SadTalker** to synchronize the replaced character's lip movements with the new audio.
+1.  **Extraction**: Video frames are extracted and processed individually.
+2.  **Structural Mapping**: ControlNet generates edge maps from the original frame.
+3.  **Semantic Injection**: IP-Adapter extracts character identity from the reference image.
+4.  **Denoising**: Stable Diffusion generates the new frame guided by both the edge map (motion) and the character features (identity).
+
+### 2.2 Audio Pipeline (ASR, Translation & Zero-Shot Cloning)
+The audio pipeline handles the semantic and vocal transformation of the soundtrack.
+
+#### Implemented Models:
+*   **Faster-Whisper (small)**: High-speed local Automatic Speech Recognition.
+*   **MarianMT (Opus-MT)**: Transformer-based local translation (English to Spanish/French/German/etc.).
+*   **F5-TTS**: A state-of-the-art Flow-Matching Diffusion model for **true zero-shot voice cloning**. It clones the reference voice from a short 5-15s recording.
+
+#### Workflow:
+1.  **Transcription**: Whisper converts source audio to text.
+2.  **Translation**: MarianMT translates the text into the target language.
+3.  **Style Extraction**: F5-TTS analyzes the reference recording to capture vocal timbre and cadence.
+4.  **Synthesis**: F5-TTS generates the translated text in the cloned voice.
+
+### 2.3 Synchronization Pipeline (Lip-Sync)
+Ensures the visuals and transformed audio are perfectly aligned.
+
+#### Implemented Models:
+*   **Wav2Lip 256 (ONNX)**: High-resolution lip-syncing model.
+*   **MediaPipe**: Lightweight, fast face detection used to track the character's mouth area for lip-syncing.
 
 ## 3. Tech Stack & Integration
-*   **Orchestration**: **ComfyUI** or **Python (PyTorch)** script. ComfyUI is recommended for its node-based workflow, which is excellent for chaining these complex ML models.
-*   **Execution Environment**: Linux (Ubuntu 22.04+ recommended) with NVIDIA Docker support.
-*   **API/GUI**: A Gradio or Streamlit-based web interface for uploading files and monitoring the process.
+*   **Orchestration**: Python 3.12 with custom modules.
+*   **Video Processing**: MoviePy and OpenCV.
+*   **Audio Processing**: SoundFile and Pydub.
+*   **Portability**: Bundled `static-ffmpeg` to provide `ffmpeg`/`ffprobe` binaries without system-wide dependencies.
+*   **Interface**: Gradio for the Web UI and `argparse` for the CLI.
 
 ## 4. Hardware Requirements
-To run these models locally at reasonable speeds:
-*   **GPU**: NVIDIA RTX 3090/4090 (24GB VRAM) is highly recommended for Wan-Animate and high-resolution video generation. Minimum 12GB VRAM for basic operation.
-*   **RAM**: 32GB+ (64GB preferred for heavy video processing).
-*   **Storage**: NVMe SSD (at least 500GB for models and temporary video frames).
+Verified on **NVIDIA GB10 (Blackwell)** hardware:
+*   **GPU**: NVIDIA RTX 3060 (12GB VRAM) minimum. 24GB recommended for high-resolution processing.
+*   **CPU**: Modern multi-core processor for ASR and orchestration.
+*   **RAM**: 16GB+ (32GB preferred).
 
-## 5. Implementation Phases
-1.  **Phase 1: Audio Prototype**: Implement the Whisper -> LLM -> Fish Speech pipeline to verify translation and cloning quality.
-2.  **Phase 2: Visual Prototype**: Set up Wan-Animate in ComfyUI and test character replacement on short 5-10 second clips.
-3.  **Phase 3: Integration**: Develop a script to sync the output of the audio pipeline with the visual pipeline, including lip-syncing.
-4.  **Phase 4: Optimization**: Implement batch processing and quantization (e.g., using GGUF for LLMs or 8-bit weights for diffusion models) to improve performance.
+## 5. Implementation Summary
+The project was implemented in 5 phases, moving from basic audio/visual prototypes to a unified, synchronized system. The final deliverable includes both a CLI tool and a Gradio Web UI for maximum accessibility.
 
 ## 6. Challenges & Mitigations
-*   **Temporal Consistency**: "Flickering" in video can be mitigated using ControlNet and temporal layers in Wan-Animate.
-*   **Latency**: Local processing will be slow; optimized inference engines like TensorRT should be explored.
-*   **Lip-Sync Accuracy**: Ensuring the new audio matches the visual character replacement will require a dedicated lip-sync pass using models like LivePortrait.
+*   **Environmental Conflicts**: Resolved issues with `torchcodec` and `moviepy` versions by implementing custom loaders and pinning dependencies.
+*   **Temporal Consistency**: Mitigated flickering by using ControlNet structure guidance at every frame.
+*   **Hallucinations**: Improved translation robustness with deduplication logic for the MarianMT output.
