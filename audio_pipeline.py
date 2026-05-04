@@ -18,21 +18,16 @@ from speaker_id import SpeakerIdentification
 class AudioPipeline:
     def __init__(self, asr_model_path, translation_model_path_prefix, tts_model_path=None, tts_voices_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Initializing Audio Pipeline on {self.device}")
-        
         self.asr_model = WhisperModel(asr_model_path, device="cpu", compute_type="float32")
         self.model_prefix = translation_model_path_prefix
         self.tokenizer = None
         self.translation_model = None
         self.current_pair = None
-        
         self.f5tts = F5TTS(device=self.device)
         self.speaker_identifier = SpeakerIdentification()
-        
         if tts_model_path and tts_voices_path:
             self.kokoro = Kokoro(tts_model_path, tts_voices_path)
-        else:
-            self.kokoro = None
+        else: self.kokoro = None
 
     def _load_translation_model(self, source_lang, target_lang):
         pair = f"{source_lang}-{target_lang}"
@@ -70,36 +65,23 @@ class AudioPipeline:
         return output_path
 
     def map_audio_to_speakers(self, audio_segments, visual_activity):
-        """Maps audio segments to the most likely visual speaker."""
         mapped_segments = []
         for s in audio_segments:
             start, end = s['start'], s['end']
-            max_activity = -1
-            best_speaker = 0 # Default
-            
+            max_activity = -1; best_speaker = 0
             for speaker_id, activity in visual_activity.items():
-                # Average openness during this audio segment
                 segment_activity = [val for time, val in activity if start <= time <= end]
                 if segment_activity:
                     avg = sum(segment_activity) / len(segment_activity)
                     if avg > max_activity:
-                        max_activity = avg
-                        best_speaker = speaker_id
-            
+                        max_activity = avg; best_speaker = speaker_id
             s['speaker_id'] = best_speaker
             mapped_segments.append(s)
         return mapped_segments
 
     def process_video(self, video_path, output_audio_path, ref_audio_paths=None, target_lang="es", preserve_bg=True, output_srt=None):
-        """
-        ref_audio_paths: { speaker_id: path } or list of paths
-        """
-        logger.info(f"Processing audio for {video_path}")
-        
-        # 1. Visual Speaker Identification
-        visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=5.0)
-        
-        # 2. Extract and separate audio
+        logger.info(f"Processing multi-speaker audio for {video_path}")
+        visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=10.0)
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
         video.audio.write_audiofile(temp_source_audio, logger=None)
@@ -109,47 +91,31 @@ class AudioPipeline:
             try: vocal_track, background_track = self.separate_audio(temp_source_audio)
             except: pass
         
-        # 3. Transcribe and Translate
         _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
-        
-        # 4. Map to Speakers
         segments = self.map_audio_to_speakers(segments, visual_activity)
         
-        # 5. Synthesis with Multi-Speaker Support
-        logger.info("Synthesizing multi-speaker audio...")
+        logger.info("Synthesizing segments with speaker mapping...")
         audio_clips = []
         os.makedirs("temp_segments", exist_ok=True)
-        
         for i, s in enumerate(segments):
-            # Pick correct reference audio for this speaker
-            current_ref = None
-            if isinstance(ref_audio_paths, dict):
-                current_ref = ref_audio_paths.get(s['speaker_id'])
-            elif isinstance(ref_audio_paths, list) and len(ref_audio_paths) > s['speaker_id']:
-                current_ref = ref_audio_paths[s['speaker_id']]
-                
+            current_ref = ref_audio_paths.get(f"Character_{s['speaker_id']}") if isinstance(ref_audio_paths, dict) else None
             ref_text = ""
             if current_ref: ref_text, _ = self.transcribe_audio(current_ref)
-
-            translated_text = s['text'] # Simplified
+            
             seg_path = f"temp_segments/seg_{i}.wav"
-            self.synthesize_segment(translated_text, current_ref, ref_text, seg_path)
+            self.synthesize_segment(s['text'], current_ref, ref_text, seg_path)
             audio_clips.append(mp.AudioFileClip(seg_path).set_start(s['start']))
 
-        # 6. Mix and Save
         final_audio = mp.CompositeAudioClip(audio_clips)
         if background_track:
             bg_audio = mp.AudioFileClip(background_track).volumex(0.3)
             final_audio = mp.CompositeAudioClip([bg_audio, final_audio])
             
         final_audio.write_audiofile(output_audio_path, fps=24000, logger=None)
-        
         video.close()
         for c in audio_clips: c.close()
-        import shutil
-        shutil.rmtree("temp_segments")
-        if os.path.exists(temp_source_audio): os.remove(temp_source_audio)
-        return output_audio_path
+        # Return segments for orchestration
+        return output_audio_path, segments
 
 if __name__ == "__main__":
     pass
