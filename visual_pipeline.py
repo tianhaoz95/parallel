@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel, UniPCMultistepScheduler
 from transformers import CLIPVisionModelWithProjection
-import moviepy as mp
+import moviepy.editor as mp
 
 class VisualPipeline:
     def __init__(self, 
@@ -82,15 +82,17 @@ class VisualPipeline:
         
         frames = []
         count = 0
+        fps = clip.fps
         for frame in clip.iter_frames():
-            if count / clip.fps > test_duration:
+            if count / fps > test_duration:
                 break
             new_frame = self.process_frame(frame, ref_image, prompt)
             frames.append(new_frame)
             count += 1
             
-        new_clip = mp.ImageSequenceClip(frames, fps=clip.fps)
+        new_clip = mp.ImageSequenceClip(frames, fps=fps)
         new_clip.write_videofile(output_video_path, codec="libx264", audio=False)
+        clip.close()
         return output_video_path
 
 if __name__ == "__main__":
