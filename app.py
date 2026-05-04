@@ -5,19 +5,23 @@ import sys
 from unittest.mock import patch
 from logger_utils import logger, CONFIG
 
-def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, show_comparison, progress=gr.Progress()):
+def transform_video(video, ref_image, ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison, progress=gr.Progress()):
     if video is None or ref_image is None:
         return None, None, "Error: Video and Reference Image are required."
     
     output_path = "transformed_output.mp4"
     comparison_path = "comparison_view.mp4"
     
+    # Apply style suffix to prompt
+    style_suffix = CONFIG.get('styles', {}).get(style, "")
+    full_prompt = f"{prompt}, {style_suffix}" if style_suffix else prompt
+    
     # Prepare arguments
     args = [
         "--video", video,
         "--ref_image", ref_image,
         "--target_lang", target_lang,
-        "--prompt", prompt,
+        "--prompt", full_prompt,
         "--output", output_path
     ]
     
@@ -32,7 +36,7 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
         
     CONFIG['defaults']['use_lcm'] = use_lcm
     
-    logger.info(f"UI transformation. LCM: {use_lcm}, Comparison: {show_comparison}")
+    logger.info(f"UI transformation. Style: {style}, LCM: {use_lcm}")
     progress(0, desc="🚀 Starting Pipeline...")
     
     with patch.object(sys, 'argv', ["main.py"] + args):
@@ -63,10 +67,12 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
             input_ref_audio = gr.Audio(label="3. Reference Voice Audio (Optional)", type="filepath")
             
             with gr.Group():
-                gr.Markdown("### ⚙️ Settings")
+                gr.Markdown("### 🎨 Creative Settings")
                 with gr.Row():
                     target_lang = gr.Dropdown(choices=["es", "fr", "de", "it", "zh"], value="es", label="Target Language")
-                    prompt = gr.Textbox(value="a portrait of a beautiful character", label="Visual Prompt")
+                    style = gr.Dropdown(choices=list(CONFIG.get('styles', {}).keys()), value="Cinematic", label="Visual Style Preset")
+                
+                prompt = gr.Textbox(value="a portrait of a beautiful character", label="Character Description")
             
             with gr.Row():
                 use_lcm = gr.Checkbox(label="🚀 Fast Mode (LCM)", value=False)
@@ -83,14 +89,14 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
             
             gr.Markdown("""
             ### 💡 Tips
+            - **Visual Style**: Presets automatically add high-quality suffixes to your prompt.
             - **Fast Mode (LCM)**: Generates 8x faster but may have slightly less detail.
-            - **Visuals**: Use a high-quality portrait for the best results.
-            - **Audio**: Use clean speech for cloning.
+            - **Audio**: Use 5-15s of clean speech for cloning.
             """)
 
     run_btn.click(
         fn=transform_video,
-        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, show_comparison],
+        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, style, skip_lipsync, preserve_bg, use_lcm, show_comparison],
         outputs=[output_video, comparison_video, status]
     )
 

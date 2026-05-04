@@ -15,6 +15,13 @@ models:
   lipsync:
     wav2lip_onnx: "models/wav2lip_256.onnx"
 
+# Visual Style Presets
+styles:
+  "Cinematic": "highly detailed, professional cinematography, 8k, realistic lighting, masterpiece"
+  "Photorealistic": "raw photo, realistic skin texture, neutral lighting, high resolution"
+  "Animated/3D": "3d render, pixar style, smooth textures, vibrant colors, stylized"
+  "Comic Book": "comic book style, bold lines, high contrast, ink drawings, stylized"
+
 # Processing Defaults
 defaults:
   target_lang: "es"
