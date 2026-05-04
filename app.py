@@ -5,11 +5,12 @@ import sys
 from unittest.mock import patch
 from logger_utils import logger, CONFIG
 
-def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, progress=gr.Progress()):
+def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, show_comparison, progress=gr.Progress()):
     if video is None or ref_image is None:
-        return None, "Error: Video and Reference Image are required."
+        return None, None, "Error: Video and Reference Image are required."
     
     output_path = "transformed_output.mp4"
+    comparison_path = "comparison_view.mp4"
     
     # Prepare arguments
     args = [
@@ -26,27 +27,30 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
         args.append("--skip_lipsync")
     if not preserve_bg:
         args.append("--no_preserve_bg")
+    if show_comparison:
+        args.append("--comparison")
         
-    # We update the global CONFIG for this run (simple way to pass to pipeline)
     CONFIG['defaults']['use_lcm'] = use_lcm
     
-    logger.info(f"UI initiating transformation. LCM: {use_lcm}, Args: {args}")
+    logger.info(f"UI transformation. LCM: {use_lcm}, Comparison: {show_comparison}")
     progress(0, desc="🚀 Starting Pipeline...")
     
     with patch.object(sys, 'argv', ["main.py"] + args):
         try:
             progress(0.1, desc="🎙 Processing Audio...")
-            # Granular progress would require refactoring main.py, but this gives feedback
             run_pipeline()
             
-            if os.path.exists(output_path):
+            res_video = output_path if os.path.exists(output_path) else None
+            comp_video = comparison_path if show_comparison and os.path.exists(comparison_path) else None
+            
+            if res_video:
                 progress(1.0, desc="✅ Success!")
-                return output_path, "SUCCESS: Transformation complete!"
+                return res_video, comp_video, "SUCCESS: Transformation complete!"
             else:
-                return None, "Error: Transformation failed to generate output."
+                return None, None, "Error: Transformation failed to generate output."
         except Exception as e:
             logger.error(f"UI Error: {str(e)}")
-            return None, f"Error: {str(e)}"
+            return None, None, f"Error: {str(e)}"
 
 # Define the UI
 with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as demo:
@@ -68,11 +72,13 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
                 use_lcm = gr.Checkbox(label="🚀 Fast Mode (LCM)", value=False)
                 skip_lipsync = gr.Checkbox(label="Skip Lip-Sync", value=False)
                 preserve_bg = gr.Checkbox(label="Preserve BGM", value=True)
+                show_comparison = gr.Checkbox(label="🎥 Generate Comparison", value=True)
                 
             run_btn = gr.Button("🚀 Start Transformation", variant="primary", size="lg")
             
         with gr.Column(scale=1):
-            output_video = gr.Video(label="✨ Transformed Output")
+            output_video = gr.Video(label="✨ Transformed Result")
+            comparison_video = gr.Video(label="🎞 Side-by-Side Comparison")
             status = gr.Textbox(label="Status", interactive=False)
             
             gr.Markdown("""
@@ -84,8 +90,8 @@ with gr.Blocks(title="Video & Audio Transformer", theme=gr.themes.Soft()) as dem
 
     run_btn.click(
         fn=transform_video,
-        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm],
-        outputs=[output_video, status]
+        inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg, use_lcm, show_comparison],
+        outputs=[output_video, comparison_video, status]
     )
 
 if __name__ == "__main__":
