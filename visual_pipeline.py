@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from diffusers import (
     StableDiffusionControlNetImg2ImgPipeline, 
+    StableDiffusionInpaintPipeline,
     ControlNetModel, 
     UniPCMultistepScheduler,
     LCMScheduler
@@ -31,13 +32,28 @@ class VisualPipeline:
         
         logger.info(f"Initializing Visual Pipeline on {self.device}")
         
+        # 1. Load Image Encoder
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
+        
+        # 2. Load ControlNet
         self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
+        
+        # 3. Load SD Pipeline (Main Replacement)
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
             sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
             torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
         )
         
+        # 4. Load Inpainting Pipeline (Background Cleaning)
+        # We reuse the same base model if possible to save VRAM, but for now we'll assume a dedicated path
+        # or load the inpaint weights.
+        logger.info("Loading Inpainting Pipeline...")
+        self.inpaint_pipe = StableDiffusionInpaintPipeline.from_pretrained(
+            "runwayml/stable-diffusion-inpainting", 
+            torch_dtype=self.dtype, safety_checker=None
+        )
+        
+        # 5. Optimization: LCM
         self.use_lcm = CONFIG.get('defaults', {}).get('use_lcm', False)
         if self.use_lcm:
             self.pipe.load_lora_weights(CONFIG.get('optimizations', {}).get('lcm_lora'))
@@ -45,17 +61,20 @@ class VisualPipeline:
         else:
             self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
             
+        # 6. Load IP-Adapter
         self.pipe.load_ip_adapter(os.path.join(ip_adapter_path, "models"), subfolder="", weight_name="ip-adapter-plus_sd15.bin")
         self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
         
+        # 7. Face & HD
         self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
-        
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
         self.upscaler = RealESRGANer(scale=4, model_path='models/RealESRGAN_x4plus.pth', model=model, tile=400, tile_pad=10, pre_pad=0, half=True if self.device == "cuda" else False, device=self.device)
         
         self.segmenter = mp_lib.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
         
-        if self.device == "cuda": self.pipe.enable_model_cpu_offload()
+        if self.device == "cuda": 
+            self.pipe.enable_model_cpu_offload()
+            self.inpaint_pipe.enable_model_cpu_offload()
 
     def get_canny_image(self, image):
         image = np.array(image)
@@ -74,42 +93,42 @@ class VisualPipeline:
         output, _ = self.upscaler.enhance(frame_bgr, outscale=2)
         return cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
 
-    def identify_and_mask_target(self, frame, ref_embeddings):
-        """Identifies target person using embeddings and returns a precise mask."""
+    def get_person_mask(self, frame, dilate=0):
+        """Returns a binary mask of the person in the frame."""
         results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        full_mask = results.segmentation_mask > 0.5
-        
-        # If no reference provided, mask everyone
-        if not ref_embeddings:
-            return np.stack((full_mask,) * 3, axis=-1).astype(np.uint8) * 255
-            
-        # Detect faces in current frame
-        try:
-            faces = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
-            target_mask = np.zeros_like(results.segmentation_mask, dtype=bool)
-            
-            for face_data in faces:
-                face_img = face_data['face']
-                if face_img.size == 0: continue
-                
-                # Check if this face matches reference
-                try:
-                    # DeepFace.verify returns distance
-                    res = DeepFace.verify(face_img, ref_embeddings[0], detector_backend='skip', enforce_detection=False)
-                    if res['verified']:
-                        # This is our target! Get its bounding box and add to mask
-                        x, y, w, h = face_data['facial_area']['x'], face_data['facial_area']['y'], face_data['facial_area']['w'], face_data['facial_area']['h']
-                        # We use the segmentation mask within this person's vicinity
-                        # For simplicity, we just use the global mask but it could be refined
-                        target_mask = full_mask 
-                        break # Found target
-                except: continue
-            
-            return np.stack((target_mask,) * 3, axis=-1).astype(np.uint8) * 255
-        except:
-            return np.stack((full_mask,) * 3, axis=-1).astype(np.uint8) * 255
+        mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
+        if dilate > 0:
+            kernel = np.ones((dilate, dilate), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=1)
+        return mask
 
-    def process_frame(self, frame, ref_images, ref_embeddings, prompt, restore_face=True, use_mask=True):
+    def inpaint_background(self, frame, mask):
+        """Cleans the background by inpainting the person area."""
+        pil_frame = Image.fromarray(frame).resize((512, 512))
+        pil_mask = Image.fromarray(mask).resize((512, 512))
+        
+        # Inpaint to fill the hole with background-like textures
+        clean_bg = self.inpaint_pipe(
+            prompt="background, seamless, high quality",
+            image=pil_frame,
+            mask_image=pil_mask,
+            num_inference_steps=20
+        ).images[0]
+        
+        return np.array(clean_bg.resize((frame.shape[1], frame.shape[0])))
+
+    def process_frame(self, frame, ref_images, ref_embeddings, prompt, restore_face=True, use_mask=True, erase_original=True):
+        # 1. Masking: Get the original person area
+        mask_raw = self.get_person_mask(frame)
+        
+        # 2. Erase: If requested, clean the background first
+        bg_frame = frame
+        if erase_original and use_mask:
+            # Dilate mask to ensure we cover the original person fully
+            dilate_mask = self.get_person_mask(frame, dilate=20)
+            bg_frame = self.inpaint_background(frame, dilate_mask)
+        
+        # 3. Generate replacement character
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
         num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
@@ -119,15 +138,17 @@ class VisualPipeline:
             strength=CONFIG.get('defaults', {}).get('sd_strength', 0.6), num_inference_steps=num_steps, guidance_scale=1.0 if self.use_lcm else 7.5
         ).images[0]
         
-        transformed_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
+        transformed_person = np.array(output.resize((frame.shape[1], frame.shape[0])))
         
+        # 4. Composite: Put new person onto the (potentially cleaned) background
         if use_mask:
-            mask = self.identify_and_mask_target(frame, ref_embeddings)
-            mask = cv2.GaussianBlur(mask, (15, 15), 0)
-            mask_norm = mask.astype(float) / 255.0
-            final_frame = (transformed_frame.astype(float) * mask_norm + frame.astype(float) * (1.0 - mask_norm)).astype(np.uint8)
+            # We use the raw mask for the AI character to keep it sharp
+            mask_norm = cv2.GaussianBlur(mask_raw, (15, 15), 0).astype(float) / 255.0
+            if mask_norm.ndim == 2: mask_norm = np.stack([mask_norm]*3, axis=-1)
+            
+            final_frame = (transformed_person.astype(float) * mask_norm + bg_frame.astype(float) * (1.0 - mask_norm)).astype(np.uint8)
         else:
-            final_frame = transformed_frame
+            final_frame = transformed_person
             
         if restore_face: final_frame = self.restore_faces(final_frame)
         return final_frame
@@ -139,20 +160,14 @@ class VisualPipeline:
         flow[:,:,0] += np.arange(w); flow[:,:,1] += np.arange(h)[:,np.newaxis]
         return cv2.remap(prev_transformed, flow, None, cv2.INTER_LINEAR)
 
-    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True, upscale=False):
+    def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True, use_mask=True, erase_original=True, upscale=False):
         if isinstance(ref_image_paths, str): ref_image_paths = [ref_image_paths]
-        logger.info(f"Processing video {video_path} with Identity Targeting...")
+        logger.info(f"Processing video {video_path} with Inpainting: {erase_original}")
         clip = mp.VideoFileClip(video_path)
         ref_images = [Image.open(p).convert("RGB").resize((224, 224)) for p in ref_image_paths]
         
-        # Pre-calculate reference embeddings for targeting
-        logger.info("Extracting reference face identity...")
-        ref_embeddings = []
-        for p in ref_image_paths:
-            try:
-                # We store the image path for DeepFace to use
-                ref_embeddings.append(p)
-            except: continue
+        # Identity embeddings (dummy for now as per previous implementation)
+        ref_embeddings = ref_image_paths
 
         fps = clip.fps; width, height = clip.size
         out_w, out_h = (width * 2, height * 2) if upscale else (width, height)
@@ -164,7 +179,7 @@ class VisualPipeline:
         try:
             for frame in clip.iter_frames():
                 if count / fps > test_duration: break
-                curr_transformed = self.process_frame(frame, ref_images, ref_embeddings, prompt, restore_face=restore_face, use_mask=use_mask)
+                curr_transformed = self.process_frame(frame, ref_images, ref_embeddings, prompt, restore_face=restore_face, use_mask=use_mask, erase_original=erase_original)
                 if smooth and prev_transformed is not None:
                     warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
                     curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
