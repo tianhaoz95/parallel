@@ -11,7 +11,9 @@ A local, end-to-end pipeline for transforming video content using state-of-the-a
     - **Translation**: Uses `MarianMT` (Opus-MT) models for high-quality local translation.
     - **Zero-Shot Voice Cloning**: Powered by **F5-TTS** to clone voices from a 5-15s reference recording.
     - **Atmosphere Preservation**: Uses **Demucs** audio source separation to preserve original background music and sound effects.
-- **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** with **MediaPipe** face detection to synchronize the new character's lips.
+- **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** to synchronize the new character's lips.
+- **Automatic Subtitles**: Generates synchronized **SRT files** and optional captions in the target language.
+- **Comparison View**: Generates a **Side-by-Side comparison video** showing the original vs. transformed results.
 - **Automatic Orchestration**: Unified CLI tool and Gradio Web UI that handle the entire process.
 
 ## Requirements
@@ -78,6 +80,8 @@ PYTHONPATH=. pytest tests/
 - `--output`: Path to save the final video.
 - `--skip_lipsync`: Skip the high-res lipsync pass (faster).
 - `--no_preserve_bg`: Do not use Demucs to preserve background music.
+- `--subtitles`: Generate synchronized SRT subtitle files.
+- `--comparison`: Generate a side-by-side comparison video.
 
 ## Project Structure
 - `main.py`: The entry point for the full pipeline.
