@@ -14,6 +14,7 @@ from logger_utils import logger, CONFIG
 import pysubs2
 import librosa
 from speaker_id import SpeakerIdentification
+from emotion_analyzer import EmotionAnalyzer
 
 class AudioPipeline:
     def __init__(self, asr_model_path, translation_model_path_prefix, tts_model_path=None, tts_voices_path=None):
@@ -25,6 +26,7 @@ class AudioPipeline:
         self.current_pair = None
         self.f5tts = F5TTS(device=self.device)
         self.speaker_identifier = SpeakerIdentification()
+        self.emotion_analyzer = EmotionAnalyzer()
         if tts_model_path and tts_voices_path:
             self.kokoro = Kokoro(tts_model_path, tts_voices_path)
         else: self.kokoro = None
@@ -44,7 +46,7 @@ class AudioPipeline:
         segments, info = self.asr_model.transcribe(audio_path, beam_size=5)
         text_segments = []
         for s in segments:
-            text_segments.append({'start': s.start, 'end': s.end, 'text': s.text.strip()})
+            text_segments.append({'start': s.start, 'end': s.end, 'text': s.text.strip(), 'audio_path': audio_path})
         full_text = " ".join([s['text'] for s in text_segments])
         if detect_language: return full_text, info.language, text_segments
         return full_text, text_segments
@@ -55,36 +57,22 @@ class AudioPipeline:
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
         return os.path.join(output_dir, "htdemucs", base_name, "vocals.wav"), os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
 
-    def synthesize_segment(self, text, ref_audio_path, ref_text, output_path):
+    def synthesize_segment(self, text, ref_audio_path, ref_text, output_path, speed=1.0):
         if ref_audio_path:
             wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=text)
             sf.write(output_path, wav, sr)
         elif self.kokoro:
-            samples, sr = self.kokoro.create(text, voice="af_sarah", speed=1.0, lang="en-us")
+            samples, sr = self.kokoro.create(text, voice="af_sarah", speed=speed, lang="en-us")
             sf.write(output_path, samples, sr)
         return output_path
 
-    def map_audio_to_speakers(self, audio_segments, visual_activity):
-        mapped_segments = []
-        for s in audio_segments:
-            start, end = s['start'], s['end']
-            max_activity = -1; best_speaker = 0
-            for speaker_id, activity in visual_activity.items():
-                segment_activity = [val for time, val in activity if start <= time <= end]
-                if segment_activity:
-                    avg = sum(segment_activity) / len(segment_activity)
-                    if avg > max_activity:
-                        max_activity = avg; best_speaker = speaker_id
-            s['speaker_id'] = best_speaker
-            mapped_segments.append(s)
-        return mapped_segments
-
     def process_video(self, video_path, output_audio_path, ref_audio_paths=None, target_lang="es", preserve_bg=True, output_srt=None):
-        logger.info(f"Processing multi-speaker audio for {video_path}")
+        logger.info(f"Processing audio for {video_path}")
         visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=10.0)
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
         video.audio.write_audiofile(temp_source_audio, logger=None)
+        
         vocal_track = temp_source_audio
         background_track = None
         if preserve_bg:
@@ -92,18 +80,37 @@ class AudioPipeline:
             except: pass
         
         _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
-        segments = self.map_audio_to_speakers(segments, visual_activity)
         
-        logger.info("Synthesizing segments with speaker mapping...")
+        # 1. Map to Speakers
+        for s in segments:
+            start, end = s['start'], s['end']
+            max_activity = -1; best_speaker = 0
+            for sp_id, act in visual_activity.items():
+                seg_act = [v for t, v in act if start <= t <= end]
+                if seg_act:
+                    avg = sum(seg_act) / len(seg_act)
+                    if avg > max_activity: max_activity = avg; best_speaker = sp_id
+            s['speaker_id'] = best_speaker
+
+        logger.info("Synthesizing segments with Emotion Transfer...")
         audio_clips = []
         os.makedirs("temp_segments", exist_ok=True)
         for i, s in enumerate(segments):
+            # 2. Analyze Emotion of original segment
+            # We need to extract the segment audio first
+            y, sr = librosa.load(vocal_track, offset=s['start'], duration=s['end']-s['start'])
+            temp_seg_orig = f"temp_segments/orig_{i}.wav"
+            sf.write(temp_seg_orig, y, sr)
+            
+            emotion = self.emotion_analyzer.analyze_audio(temp_seg_orig)
+            params = self.emotion_analyzer.map_to_synthesis_params(emotion)
+            
             current_ref = ref_audio_paths.get(f"Character_{s['speaker_id']}") if isinstance(ref_audio_paths, dict) else None
             ref_text = ""
             if current_ref: ref_text, _ = self.transcribe_audio(current_ref)
             
             seg_path = f"temp_segments/seg_{i}.wav"
-            self.synthesize_segment(s['text'], current_ref, ref_text, seg_path)
+            self.synthesize_segment(s['text'], current_ref, ref_text, seg_path, speed=params['speed'])
             audio_clips.append(mp.AudioFileClip(seg_path).set_start(s['start']))
 
         final_audio = mp.CompositeAudioClip(audio_clips)
@@ -114,7 +121,9 @@ class AudioPipeline:
         final_audio.write_audiofile(output_audio_path, fps=24000, logger=None)
         video.close()
         for c in audio_clips: c.close()
-        # Return segments for orchestration
+        import shutil
+        shutil.rmtree("temp_segments")
+        if os.path.exists(temp_source_audio): os.remove(temp_source_audio)
         return output_audio_path, segments
 
 if __name__ == "__main__":
