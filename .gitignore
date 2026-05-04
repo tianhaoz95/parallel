@@ -12,3 +12,7 @@ transformed_output.mp4
 gfpgan/
 separated/
 temp_*
+.env
+projects/
+transformation_history.json
+*.log

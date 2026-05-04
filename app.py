@@ -9,6 +9,11 @@ import json
 from datetime import datetime
 from unittest.mock import patch
 from logger_utils import logger, CONFIG
+from dotenv import load_dotenv
+
+load_dotenv()
+if "HF_TOKEN" in os.environ:
+    os.environ["HUGGING_FACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
 
 HISTORY_FILE = "transformation_history.json"
 discoverer = IdentityDiscoverer()
@@ -51,7 +56,12 @@ def start_transformation(video, target_lang, prompt, style, skip_lipsync, preser
         char_prompt = char_inputs[i*4 + 3]
         
         if ref_files is not None:
-            img_paths = [f.name for f in ref_files] if isinstance(ref_files, list) else [ref_files.name]
+            # Handle list or single file, and handle if they are objects with .name or just strings
+            if isinstance(ref_files, list):
+                img_paths = [f.name if hasattr(f, 'name') else f for f in ref_files]
+            else:
+                img_paths = [ref_files.name if hasattr(ref_files, 'name') else ref_files]
+            
             identity_map[f"Character_{i}"] = {
                 "images": img_paths, 
                 "audio": ref_audio if ref_audio else None,
@@ -124,7 +134,7 @@ with gr.Blocks(title="AI Video Studio", theme=gr.themes.Soft()) as demo:
                     mapping_rows.append(row); mapping_components.extend([ref_imgs, ref_voice, save_name, char_prompt])
             def update_rows(msg, thumbs):
                 num = len(thumbs); return [msg, thumbs] + [gr.update(visible=(i < num)) for i in range(8)]
-            scan_btn.click(fn=scan_video_identities, inputs=[scan_video], outputs=[scan_status, id_gallery] + mapping_rows).then(fn=update_rows, inputs=[scan_status, id_gallery], outputs=[scan_status, id_gallery] + mapping_rows)
+            scan_btn.click(fn=scan_video_identities, inputs=[scan_video], outputs=[scan_status, id_gallery]).then(fn=update_rows, inputs=[scan_status, id_gallery], outputs=[scan_status, id_gallery] + mapping_rows)
 
         with gr.Tab("2. Production & Rendering"):
             with gr.Row():
@@ -143,7 +153,7 @@ with gr.Blocks(title="AI Video Studio", theme=gr.themes.Soft()) as demo:
         with gr.Tab("History"):
             hist_display = gr.HTML(value=get_history_html())
 
-    run_btn.click(fn=start_transformation, inputs=[scan_video, target_lang, prompt, style, gr.State(False), preserve_bg, smooth, gr.State(True), use_lcm, show_comp] + mapping_components, outputs=[out_v, comp_v, stat, hist_display])
+    run_btn.click(fn=start_transformation, inputs=[scan_video, target_lang, prompt, style, gr.State(False), preserve_bg, smooth, gr.State(True), gr.State(False), use_lcm, show_comp] + mapping_components, outputs=[out_v, comp_v, stat, hist_display])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)

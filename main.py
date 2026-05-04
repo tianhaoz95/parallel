@@ -84,6 +84,7 @@ def main():
     output_srt = "temp_subtitles.srt" if args.subtitles else None
     
     # We pass ext_segments here (logic would need small update in process_video to use them)
+    ref_audios = {name: data.get('audio') for name, data in identity_data.items() if data.get('audio')}
     _, segments = audio_pipe.process_video(
         args.video, 
         translated_audio, 

@@ -60,7 +60,7 @@ class HardwareAdaptiveLoader:
         opt = get_optimal_config()
         
         # Update CONFIG paths and defaults
-        CONFIG['models']['asr'] = f"models/faster-whisper-{opt['whisper_model']}"
+        CONFIG['models']['asr'] = f"Systran/faster-whisper-{opt['whisper_model']}"
         CONFIG['defaults']['preserve_bg'] = opt['use_inpainting']
         CONFIG['optimizations']['low_vram'] = opt['low_vram']
         

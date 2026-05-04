@@ -1,6 +1,6 @@
 # Model Paths
 models:
-  asr: "models/faster-whisper-small"
+  asr: "Systran/faster-whisper-large-v3"
   translation_prefix: "models/opus-mt-en-"
   tts:
     kokoro_onnx: "models/Kokoro-82M/kokoro-v1.0.onnx"

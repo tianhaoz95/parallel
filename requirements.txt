@@ -222,6 +222,8 @@ static_ffmpeg==3.0
 submitit==1.5.4
 sympy==1.14.0
 tb-nightly==2.21.0a20251023
+tensorflow==2.16.2
+tf-keras==2.16.0
 tensorboard-data-server==0.7.2
 termcolor==3.3.0
 threadpoolctl==3.6.0

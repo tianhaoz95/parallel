@@ -1,4 +1,13 @@
 import os
+import threading
+
+# Disable Xet storage before any huggingface_hub import.
+# Setting the env var alone is not enough if HF Hub was already imported;
+# we must mutate the module-level constant directly.
+import huggingface_hub.constants as _hf_constants
+_hf_constants.HF_HUB_DISABLE_XET = True
+del _hf_constants
+
 import torch
 import soundfile as sf
 import numpy as np
@@ -19,10 +28,32 @@ from llm_translation import LLMTranslationPipeline
 
 static_ffmpeg.add_paths()
 
+def _load_asr_model(asr_model_path, timeout_sec=120):
+    """Load ASR model with timeout protection for hung downloads."""
+    timed_out = False
+
+    def _kill_on_timeout():
+        nonlocal timed_out
+        timed_out = True
+        logger.warning("ASR model download timed out after %ds. Trying fallback to smaller model.", timeout_sec)
+
+    timer = threading.Timer(timeout_sec, _kill_on_timeout)
+    timer.daemon = True
+    timer.start()
+    try:
+        model = WhisperModel(asr_model_path, device="cpu", compute_type="float32")
+        timer.cancel()
+        logger.info("ASR model loaded: %s", asr_model_path)
+        return model
+    except Exception as e:
+        timer.cancel()
+        logger.error("ASR model load failed: %s", e)
+        raise
+
 class AudioPipeline:
     def __init__(self, asr_model_path, translation_model_path_prefix, tts_model_path=None, tts_voices_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.asr_model = WhisperModel(asr_model_path, device="cpu", compute_type="float32")
+        self.asr_model = _load_asr_model(asr_model_path)
         self.model_prefix = translation_model_path_prefix
         self.use_llm = CONFIG.get('defaults', {}).get('use_llm_translation', False)
         self.f5tts = F5TTS(device=self.device)
@@ -65,6 +96,20 @@ class AudioPipeline:
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
         return os.path.join(output_dir, "htdemucs", base_name, "vocals.wav"), os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
 
+    def consolidate_reference_audio(self, audio_paths, output_path):
+        """Merges multiple reference audio clips into one master reference."""
+        if not audio_paths: return None
+        if len(audio_paths) == 1: return audio_paths[0]
+        
+        logger.info(f"Consolidating {len(audio_paths)} reference audio samples...")
+        clips = [mp.AudioFileClip(p) for p in audio_paths if os.path.exists(p)]
+        if not clips: return None
+        
+        final_clip = mp.concatenate_audioclips(clips)
+        final_clip.write_audiofile(output_path, fps=24000, logger=None)
+        for c in clips: c.close()
+        return output_path
+
     def synthesize_segment(self, text, ref_audio_path, ref_text, output_path, emotion_tag="", speed=1.0):
         full_text = f"{emotion_tag} {text}" if emotion_tag else text
         if ref_audio_path:
@@ -76,9 +121,6 @@ class AudioPipeline:
         return output_path
 
     def process_video(self, video_path, output_audio_path, ref_audio_paths=None, target_lang="es", preserve_bg=True, output_srt=None, external_segments=None):
-        """
-        Processes audio using either automated pipeline or provided external_segments.
-        """
         logger.info(f"Processing audio for {video_path}")
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
@@ -91,57 +133,41 @@ class AudioPipeline:
             except: pass
         
         if external_segments:
-            logger.info("Using provided external script segments.")
             segments = external_segments
         else:
-            logger.info("Running automated transcription and translation...")
             _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
-            
             if detected_lang != target_lang:
                 self._load_translation_model(detected_lang, target_lang)
-                for s in segments:
-                    s['translated_text'] = self.translate_text(s['text'], detected_lang, target_lang)
+                for s in segments: s['translated_text'] = self.translate_text(s['text'], detected_lang, target_lang)
             else:
                 for s in segments: s['translated_text'] = s['text']
 
-        # Speaker mapping (if not already mapped in external script)
-        if 'speaker_id' not in segments[0]:
-            visual_activity = self.speaker_identifier.detect_speakers_in_video(video_path, duration=10.0)
-            for s in segments:
-                start, end = s['start'], s['end']
-                max_act = -1; best_sp = 0
-                for sp_id, act in visual_activity.items():
-                    seg_act = [v for t, v in act if start <= t <= end]
-                    if seg_act and sum(seg_act)/len(seg_act) > max_act:
-                        max_act = sum(seg_act)/len(seg_act); best_sp = sp_id
-                s['speaker_id'] = best_sp
+        # Consolidated Master Audio for each character
+        master_refs = {}
+        os.makedirs("temp_masters", exist_ok=True)
+        if isinstance(ref_audio_paths, dict):
+            for sp_id, paths in ref_audio_paths.items():
+                if isinstance(paths, list):
+                    master_path = f"temp_masters/master_{sp_id}.wav"
+                    master_refs[sp_id] = self.consolidate_reference_audio(paths, master_path)
+                else:
+                    master_refs[sp_id] = paths
 
-        # Subtitles
-        if output_srt:
-            subs = pysubs2.SSAFile()
-            for s in segments:
-                subs.append(pysubs2.SSAEvent(start=int(s['start']*1000), end=int(s['end']*1000), text=s.get('translated_text', s['text'])))
-            subs.save(output_srt)
-
-        # Synthesis
-        logger.info("Synthesizing final segments...")
         audio_clips = []
         os.makedirs("temp_segments", exist_ok=True)
         for i, s in enumerate(segments):
             y, sr = librosa.load(vocal_track, offset=s['start'], duration=s['end']-s['start'])
-            temp_seg_orig = f"temp_segments/orig_{i}.wav"
-            sf.write(temp_seg_orig, y, sr)
-            emotion = self.emotion_analyzer.analyze_audio(temp_seg_orig)
+            temp_orig = f"temp_segments/orig_{i}.wav"
+            sf.write(temp_orig, y, sr)
+            emotion = self.emotion_analyzer.analyze_audio(temp_orig)
             
-            # Use specific speaker reference
-            sp_name = f"Character_{s['speaker_id']}"
-            current_ref = ref_audio_paths.get(sp_name) if isinstance(ref_audio_paths, dict) else None
+            sp_name = f"Character_{s.get('speaker_id', 0)}"
+            current_ref = master_refs.get(sp_name)
             ref_text = ""
             if current_ref: ref_text, _ = self.transcribe_audio(current_ref)
             
             seg_path = f"temp_segments/seg_{i}.wav"
-            text_to_synth = s.get('translated_text', s['text'])
-            self.synthesize_segment(text_to_synth, current_ref, ref_text, seg_path, emotion_tag=emotion['tag'] if emotion else "", speed=emotion['speed'] if emotion else 1.0)
+            self.synthesize_segment(s.get('translated_text', s['text']), current_ref, ref_text, seg_path, emotion_tag=emotion['tag'] if emotion else "", speed=emotion['speed'] if emotion else 1.0)
             audio_clips.append(mp.AudioFileClip(seg_path).set_start(s['start']))
 
         final_audio = mp.CompositeAudioClip(audio_clips)
@@ -154,6 +180,7 @@ class AudioPipeline:
         for c in audio_clips: c.close()
         import shutil
         shutil.rmtree("temp_segments")
+        shutil.rmtree("temp_masters")
         if os.path.exists(temp_source_audio): os.remove(temp_source_audio)
         return output_audio_path, segments
 
