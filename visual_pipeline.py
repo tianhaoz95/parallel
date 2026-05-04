@@ -7,6 +7,7 @@ from diffusers import StableDiffusionControlNetImg2ImgPipeline, ControlNetModel,
 from transformers import CLIPVisionModelWithProjection
 import moviepy.editor as mp
 from gfpgan import GFPGANer
+from logger_utils import logger
 
 class VisualPipeline:
     def __init__(self, 
@@ -18,17 +19,20 @@ class VisualPipeline:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         
-        print(f"Loading Visual Pipeline on {self.device}...")
+        logger.info(f"Initializing Visual Pipeline on {self.device}")
         
-        # 1. Load Image Encoder for IP-Adapter Plus (CLIP-ViT-H-14)
+        # 1. Load Image Encoder
+        logger.info(f"Loading Image Encoder from {image_encoder_path}...")
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
             image_encoder_path, torch_dtype=self.dtype
         ).to(self.device)
         
         # 2. Load ControlNet
+        logger.info(f"Loading ControlNet from {controlnet_path}...")
         self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
         
         # 3. Load SD Pipeline
+        logger.info(f"Loading Stable Diffusion from {sd_model_path}...")
         self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
             sd_model_path, 
             controlnet=self.controlnet, 
@@ -40,7 +44,7 @@ class VisualPipeline:
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         
         # 4. Load IP-Adapter Plus
-        print("Loading IP-Adapter Plus weights...")
+        logger.info("Loading IP-Adapter Plus weights...")
         self.pipe.load_ip_adapter(
             os.path.join(ip_adapter_path, "models"), 
             subfolder="", 
@@ -48,10 +52,8 @@ class VisualPipeline:
         )
         self.pipe.set_ip_adapter_scale(0.7)
         
-        # 5. Load GFPGAN for Face Restoration
-        print("Loading GFPGAN for face restoration...")
-        # arch: clean, model_path: path to weights, upscale: 2, device: cuda
-        # The model will auto-download if not present
+        # 5. Load GFPGAN
+        logger.info("Loading GFPGAN for face restoration...")
         self.face_restorer = GFPGANer(
             model_path='models/GFPGANv1.4.pth',
             upscale=1,
@@ -72,13 +74,11 @@ class VisualPipeline:
 
     def restore_faces(self, frame):
         """Public method to restore faces in a single frame."""
-        # GFPGAN expects BGR image
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
     def process_frame(self, frame, ref_image, prompt, restore_face=True):
-        # Resize to 512x512 for SD 1.5
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
         
@@ -91,21 +91,19 @@ class VisualPipeline:
             num_inference_steps=15
         ).images[0]
         
-        # Convert back to numpy
         res_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
-        
-        # Apply face restoration if requested
         if restore_face:
             res_frame = self.restore_faces(res_frame)
-            
         return res_frame
 
     def process_video(self, video_path, ref_image_path, output_video_path, prompt="a person", restore_face=True):
+        logger.info(f"Processing video {video_path} for character replacement...")
         clip = mp.VideoFileClip(video_path)
         ref_image = Image.open(ref_image_path).convert("RGB").resize((224, 224))
         
+        # Demo duration
         test_duration = min(clip.duration, 0.5)
-        print(f"Processing {test_duration} seconds of video with IP-Adapter Plus & GFPGAN...")
+        logger.info(f"Running character replacement on first {test_duration} seconds...")
         
         frames = []
         count = 0
@@ -120,6 +118,7 @@ class VisualPipeline:
         new_clip = mp.ImageSequenceClip(frames, fps=fps)
         new_clip.write_videofile(output_video_path, codec="libx264", audio=False)
         clip.close()
+        logger.info(f"Character replacement video saved: {output_video_path}")
         return output_video_path
 
 if __name__ == "__main__":

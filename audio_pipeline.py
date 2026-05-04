@@ -10,8 +10,9 @@ from f5_tts.api import F5TTS
 import moviepy.editor as mp
 import static_ffmpeg
 import subprocess
+from logger_utils import logger
 
-# Ensure ffmpeg/ffprobe are in PATH for pydub and others
+# Ensure ffmpeg/ffprobe are in PATH
 static_ffmpeg.add_paths()
 
 # Monkeypatch torchaudio.load to avoid torchcodec issues
@@ -31,23 +32,24 @@ torchaudio.load = soundfile_load
 class AudioPipeline:
     def __init__(self, asr_model_path, translation_model_path, tts_model_path=None, tts_voices_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {self.device}")
+        logger.info(f"Initializing Audio Pipeline on {self.device}")
         
         # 1. Initialize ASR
-        print(f"Loading ASR model from {asr_model_path}...")
+        logger.info(f"Loading ASR model from {asr_model_path}...")
         self.asr_model = WhisperModel(asr_model_path, device="cpu", compute_type="float32")
         
         # 2. Initialize Translation
-        print(f"Loading translation model from {translation_model_path}...")
+        logger.info(f"Loading translation model from {translation_model_path}...")
         self.tokenizer = MarianTokenizer.from_pretrained(translation_model_path)
         self.translation_model = MarianMTModel.from_pretrained(translation_model_path).to(self.device)
         
         # 3. Initialize Zero-Shot TTS
-        print("Loading F5-TTS for zero-shot voice cloning...")
+        logger.info("Loading F5-TTS for zero-shot voice cloning...")
         self.f5tts = F5TTS(device=self.device)
         
         # 4. Fallback TTS
         if tts_model_path and tts_voices_path:
+            logger.info(f"Loading Kokoro fallback from {tts_model_path}...")
             self.kokoro = Kokoro(tts_model_path, tts_voices_path)
         else:
             self.kokoro = None
@@ -58,21 +60,18 @@ class AudioPipeline:
         return text
 
     def separate_audio(self, audio_path, output_dir="separated"):
-        print(f"Separating audio sources with Demucs...")
-        # Run demucs command
-        # --two-stems=vocals separates vocals from the rest (music+sfx)
+        logger.info("Separating audio sources with Demucs...")
         cmd = f"python3 -m demucs.separate --two-stems=vocals -n htdemucs --out {output_dir} {audio_path}"
-        subprocess.run(cmd, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Demucs output path is typically separated/htdemucs/filename/vocals.wav and no_vocals.wav
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
         vocals_path = os.path.join(output_dir, "htdemucs", base_name, "vocals.wav")
         background_path = os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
-        
         return vocals_path, background_path
 
     def process_video(self, video_path, output_audio_path, ref_audio_path=None, target_lang="es", preserve_bg=True):
         # 1. Extract audio
+        logger.info(f"Extracting audio from {video_path}")
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
         video.audio.write_audiofile(temp_source_audio, logger=None)
@@ -85,42 +84,42 @@ class AudioPipeline:
             try:
                 vocal_track, background_track = self.separate_audio(temp_source_audio)
             except Exception as e:
-                print(f"Demucs separation failed: {e}. Proceeding without background preservation.")
+                logger.warning(f"Demucs separation failed: {e}. Proceeding without background preservation.")
         
         # 3. Transcribe
-        print("Transcribing vocal track...")
+        logger.info("Transcribing vocal track...")
         source_text = self.transcribe_audio(vocal_track)
         if not source_text or len(source_text.strip()) < 2:
             source_text = "Hello."
-        print(f"Source Text: {source_text}")
+        logger.info(f"Source Text: {source_text}")
         
         # 4. Translate
-        print(f"Translating to {target_lang}...")
+        logger.info(f"Translating to {target_lang}...")
         inputs = self.tokenizer(source_text, return_tensors="pt").to(self.device)
         translated_tokens = self.translation_model.generate(**inputs, max_length=128)
         translated_text = self.tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
         
+        # Deduplication fix
         words = translated_text.split()
         if len(words) > 5 and len(set(words)) == 1:
             translated_text = words[0]
-            
-        print(f"Translated Text: {translated_text}")
+        logger.info(f"Translated Text: {translated_text}")
         
         # 5. Synthesis
         temp_translated_vocals = "temp_translated_vocals.wav"
         if ref_audio_path and os.path.exists(ref_audio_path):
-            print(f"Zero-shot cloning with F5-TTS...")
+            logger.info("Synthesizing zero-shot cloning with F5-TTS...")
             ref_text = self.transcribe_audio(ref_audio_path)
             wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=translated_text)
             sf.write(temp_translated_vocals, wav, sr)
         elif self.kokoro:
-            print("Synthesis with Kokoro presets...")
+            logger.info("Synthesizing with Kokoro presets...")
             samples, sample_rate = self.kokoro.create(translated_text, voice="af_sarah", speed=1.0, lang="en-us") 
             sf.write(temp_translated_vocals, samples, sample_rate)
         
         # 6. Final Remix
         if background_track and os.path.exists(background_track):
-            print("Remixing translated vocals with original background...")
+            logger.info("Remixing translated vocals with original background...")
             vocal_clip = mp.AudioFileClip(temp_translated_vocals)
             bg_clip = mp.AudioFileClip(background_track)
             final_audio = mp.CompositeAudioClip([bg_clip, vocal_clip])
@@ -135,7 +134,7 @@ class AudioPipeline:
         for f in [temp_source_audio, temp_translated_vocals]:
             if os.path.exists(f): os.remove(f)
             
-        print(f"Generated audio: {output_audio_path}")
+        logger.info(f"Successfully generated audio: {output_audio_path}")
         return output_audio_path
 
 if __name__ == "__main__":

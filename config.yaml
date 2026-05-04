@@ -1,0 +1,30 @@
+# Model Paths
+models:
+  asr: "models/faster-whisper-small"
+  translation_prefix: "models/opus-mt-en-"
+  tts:
+    kokoro_onnx: "models/Kokoro-82M/kokoro-v1.0.onnx"
+    kokoro_voices: "models/Kokoro-82M/voices.bin"
+  visual:
+    stable_diffusion: "models/stable-diffusion-v1-5-pretrained"
+    controlnet_canny: "models/sd-controlnet-canny"
+    image_encoder: "models/image_encoder_H14"
+    ip_adapter: "models/IP-Adapter_plus"
+  restoration:
+    gfpgan: "models/GFPGANv1.4.pth"
+  lipsync:
+    wav2lip_onnx: "models/wav2lip_256.onnx"
+
+# Processing Defaults
+defaults:
+  target_lang: "es"
+  ip_adapter_scale: 0.7
+  sd_strength: 0.6
+  num_inference_steps: 15
+  restore_face: true
+  preserve_bg: true
+
+# System Settings
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
