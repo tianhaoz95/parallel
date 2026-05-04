@@ -1,3 +1,4 @@
+import os
 import torch
 import sys
 from logger_utils import logger
@@ -6,6 +7,10 @@ def verify_gpu():
     """Verifies that a compatible NVIDIA GPU is available with sufficient VRAM."""
     logger.info("Checking hardware compatibility...")
     
+    if os.environ.get("USE_CPU") == "1":
+        logger.warning("Running in CPU-Only Testing Mode. Quality will be drastically reduced and processing will be slow.")
+        return True
+        
     if not torch.cuda.is_available():
         logger.error("No CUDA-compatible GPU detected. This system requires an NVIDIA GPU.")
         return False

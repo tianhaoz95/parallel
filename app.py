@@ -45,8 +45,13 @@ def scan_video_identities(video):
         gallery_items.append((id_data['thumbnail_path'], label))
     return f"✅ Found {len(CURRENT_IDENTITIES)} unique characters.", gallery_items
 
-def start_transformation(video, target_lang, prompt, style, skip_lipsync, preserve_bg, smooth, use_mask, upscale, use_lcm, show_comparison, *char_inputs, progress=gr.Progress()):
+def start_transformation(video, target_lang, prompt, style, skip_lipsync, preserve_bg, smooth, use_mask, upscale, use_lcm, show_comparison, use_cpu, *char_inputs, progress=gr.Progress()):
     if video is None: return None, None, "Error: Video required.", gr.update()
+    
+    if use_cpu:
+        os.environ["USE_CPU"] = "1"
+    else:
+        os.environ.pop("USE_CPU", None)
     
     identity_map = {}
     for i, identity in enumerate(CURRENT_IDENTITIES):
@@ -146,6 +151,7 @@ with gr.Blocks(title="AI Video Studio", theme=gr.themes.Soft()) as demo:
                     with gr.Row():
                         use_lcm = gr.Checkbox(label="🚀 Fast Mode", value=False); smooth = gr.Checkbox(label="✨ Smooth", value=True)
                         preserve_bg = gr.Checkbox(label="Preserve BGM", value=True); show_comp = gr.Checkbox(label="🎥 Comparison", value=True)
+                        use_cpu = gr.Checkbox(label="🖥️ CPU Testing Mode", value=False)
                     run_btn = gr.Button("🚀 Start Production", variant="primary", size="lg")
                 with gr.Column(scale=1):
                     out_v = gr.Video(label="Result"); comp_v = gr.Video(label="Side-by-Side"); stat = gr.Textbox(label="Status")
@@ -153,7 +159,7 @@ with gr.Blocks(title="AI Video Studio", theme=gr.themes.Soft()) as demo:
         with gr.Tab("History"):
             hist_display = gr.HTML(value=get_history_html())
 
-    run_btn.click(fn=start_transformation, inputs=[scan_video, target_lang, prompt, style, gr.State(False), preserve_bg, smooth, gr.State(True), gr.State(False), use_lcm, show_comp] + mapping_components, outputs=[out_v, comp_v, stat, hist_display])
+    run_btn.click(fn=start_transformation, inputs=[scan_video, target_lang, prompt, style, gr.State(False), preserve_bg, smooth, gr.State(True), gr.State(False), use_lcm, show_comp, use_cpu] + mapping_components, outputs=[out_v, comp_v, stat, hist_display])
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7860)
