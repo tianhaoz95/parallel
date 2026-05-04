@@ -10,7 +10,7 @@ from f5_tts.api import F5TTS
 import moviepy.editor as mp
 import static_ffmpeg
 import subprocess
-from logger_utils import logger
+from logger_utils import logger, CONFIG
 import pysubs2
 
 # Ensure ffmpeg/ffprobe are in PATH
@@ -22,10 +22,8 @@ def soundfile_load(filepath, frame_offset=0, num_frames=-1, normalize=True, chan
     audio, sr = sf.read(filepath, start=frame_offset, frames=actual_frames, dtype='float32')
     audio = torch.from_numpy(audio)
     if channels_first:
-        if audio.ndim == 1:
-            audio = audio.unsqueeze(0)
-        else:
-            audio = audio.T
+        if audio.ndim == 1: audio = audio.unsqueeze(0)
+        else: audio = audio.T
     return audio, sr
 
 torchaudio.load = soundfile_load
@@ -51,8 +49,7 @@ class AudioPipeline:
 
     def _load_translation_model(self, source_lang, target_lang):
         pair = f"{source_lang}-{target_lang}"
-        if self.current_pair == pair:
-            return
+        if self.current_pair == pair: return
         local_path = f"{self.model_prefix}{pair}"
         if not os.path.exists(local_path):
             from huggingface_hub import snapshot_download
@@ -66,10 +63,8 @@ class AudioPipeline:
         text_segments = []
         for s in segments:
             text_segments.append({'start': s.start, 'end': s.end, 'text': s.text.strip()})
-        
         full_text = " ".join([s['text'] for s in text_segments])
-        if detect_language:
-            return full_text, info.language, text_segments
+        if detect_language: return full_text, info.language, text_segments
         return full_text, text_segments
 
     def separate_audio(self, audio_path, output_dir="separated"):
@@ -79,15 +74,18 @@ class AudioPipeline:
         base_name = os.path.splitext(os.path.basename(audio_path))[0]
         return os.path.join(output_dir, "htdemucs", base_name, "vocals.wav"), os.path.join(output_dir, "htdemucs", base_name, "no_vocals.wav")
 
-    def generate_srt(self, segments, output_srt):
-        subs = pysubs2.SSAFile()
-        for i, s in enumerate(segments):
-            event = pysubs2.SSAEvent(start=int(s['start'] * 1000), end=int(s['end'] * 1000), text=s['text'])
-            subs.append(event)
-        subs.save(output_srt)
-        return output_srt
+    def synthesize_segment(self, text, ref_audio_path, ref_text, output_path):
+        """Synthesizes a single segment of speech."""
+        if ref_audio_path:
+            wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=text)
+            sf.write(output_path, wav, sr)
+        elif self.kokoro:
+            samples, sr = self.kokoro.create(text, voice="af_sarah", speed=1.0, lang="en-us")
+            sf.write(output_path, samples, sr)
+        return output_path
 
     def process_video(self, video_path, output_audio_path, ref_audio_path=None, target_lang="es", preserve_bg=True, output_srt=None):
+        logger.info(f"Processing audio for {video_path}")
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
         video.audio.write_audiofile(temp_source_audio, logger=None)
@@ -96,48 +94,77 @@ class AudioPipeline:
         background_track = None
         if preserve_bg:
             try: vocal_track, background_track = self.separate_audio(temp_source_audio)
-            except: pass
+            except Exception as e: logger.warning(f"Source separation failed: {e}")
         
-        logger.info("Transcribing...")
-        full_text, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
+        logger.info("Transcribing and detecting language...")
+        _, detected_lang, segments = self.transcribe_audio(vocal_track, detect_language=True)
         
-        # Translate segments for SRT
-        translated_segments = []
+        # Get reference text once if needed
+        ref_text = ""
+        if ref_audio_path:
+            logger.info("Transcribing reference audio...")
+            ref_text, _ = self.transcribe_audio(ref_audio_path)
+
         if detected_lang != target_lang:
             self._load_translation_model(detected_lang, target_lang)
-            logger.info("Translating...")
+            logger.info(f"Translating {len(segments)} segments...")
             for s in segments:
                 inputs = self.tokenizer(s['text'], return_tensors="pt").to(self.device)
                 tokens = self.translation_model.generate(**inputs)
-                trans_text = self.tokenizer.decode(tokens[0], skip_special_tokens=True)
-                translated_segments.append({'start': s['start'], 'end': s['end'], 'text': trans_text})
-            translated_text = " ".join([s['text'] for s in translated_segments])
+                s['translated_text'] = self.tokenizer.decode(tokens[0], skip_special_tokens=True)
         else:
-            translated_text = full_text
-            translated_segments = segments
+            for s in segments: s['translated_text'] = s['text']
 
         if output_srt:
-            self.generate_srt(translated_segments, output_srt)
+            subs = pysubs2.SSAFile()
+            for s in segments:
+                subs.append(pysubs2.SSAEvent(start=int(s['start']*1000), end=int(s['end']*1000), text=s['translated_text']))
+            subs.save(output_srt)
 
-        # Synthesis
-        temp_vocals = "temp_translated_vocals.wav"
-        if ref_audio_path:
-            ref_text, _ = self.transcribe_audio(ref_audio_path)
-            wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=translated_text)
-            sf.write(temp_vocals, wav, sr)
-        elif self.kokoro:
-            samples, sr = self.kokoro.create(translated_text, voice="af_sarah", speed=1.0, lang="en-us")
-            sf.write(temp_vocals, samples, sr)
+        # Precise Segment-based Synthesis
+        logger.info("Synthesizing audio segments precisely...")
+        audio_clips = []
+        os.makedirs("temp_segments", exist_ok=True)
         
-        if background_track:
-            v_clip, b_clip = mp.AudioFileClip(temp_vocals), mp.AudioFileClip(background_track)
-            mp.CompositeAudioClip([b_clip, v_clip]).write_audiofile(output_audio_path, fps=24000, logger=None)
-            v_clip.close(); b_clip.close()
-        else:
-            if os.path.exists(temp_vocals): os.rename(temp_vocals, output_audio_path)
+        for i, s in enumerate(segments):
+            seg_path = f"temp_segments/seg_{i}.wav"
+            self.synthesize_segment(s['translated_text'], ref_audio_path, ref_text, seg_path)
+            
+            clip = mp.AudioFileClip(seg_path).set_start(s['start'])
+            # Adjust duration to fit the original segment or slightly expand/compress
+            # For now, we keep the synthesized length but capped at the original end if needed
+            # or just let it play. Professional tools often stretch/compress.
+            audio_clips.append(clip)
 
-        for f in [temp_source_audio, temp_vocals]:
-            if os.path.exists(f): os.remove(f)
+        # Assemble new vocals
+        new_vocal_audio = mp.CompositeAudioClip(audio_clips)
+        
+        # Final Mix
+        if background_track:
+            logger.info("Remixing with background and ducking...")
+            bg_audio = mp.AudioFileClip(background_track)
+            
+            # Simple Ducking: Lower BG volume to 20% when vocals play
+            # We can use fl_filter or just volume effects. 
+            # For simplicity, we lower BG volume globally or use the composite.
+            # Real ducking requires volume envelopes, but 30% BG is usually safe.
+            bg_audio = bg_audio.volumex(0.3) 
+            final_audio = mp.CompositeAudioClip([bg_audio, new_vocal_audio.volumex(1.2)])
+        else:
+            final_audio = new_vocal_audio
+
+        final_audio.write_audiofile(output_audio_path, fps=24000, logger=None)
+        
+        # Cleanup
+        video.close()
+        for c in audio_clips: c.close()
+        if background_track: bg_audio.close()
+        
+        import shutil
+        if os.path.exists("temp_segments"): shutil.rmtree("temp_segments")
+        if os.path.exists(temp_source_audio): os.remove(temp_source_audio)
+        
+        logger.info(f"Audio processing complete: {output_audio_path}")
         return output_audio_path
 
 if __name__ == "__main__":
