@@ -14,6 +14,7 @@ A local, end-to-end pipeline for transforming video content using state-of-the-a
 - **Lip-Syncing**: Uses **Wav2Lip 256 ONNX** to synchronize the new character's lips.
 - **Automatic Subtitles**: Generates synchronized **SRT files** and optional captions in the target language.
 - **Comparison View**: Generates a **Side-by-Side comparison video** showing the original vs. transformed results.
+- **Result Gallery**: Tracks transformation **history** and parameters across sessions in the Web UI.
 - **Automatic Orchestration**: Unified CLI tool and Gradio Web UI that handle the entire process.
 
 ## Requirements
