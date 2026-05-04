@@ -12,6 +12,7 @@ from diffusers import (
 from transformers import CLIPVisionModelWithProjection
 import moviepy.editor as mp
 from gfpgan import GFPGANer
+import mediapipe as mp_lib
 from logger_utils import logger, CONFIG
 
 class VisualPipeline:
@@ -70,6 +71,10 @@ class VisualPipeline:
             upscale=1, arch='clean', channel_multiplier=2, device=self.device
         )
         
+        # Initialize MediaPipe Segmentation
+        self.mp_selfie = mp_lib.solutions.selfie_segmentation
+        self.segmenter = self.mp_selfie.SelfieSegmentation(model_selection=1) # 1 for landscape
+        
         if self.device == "cuda":
             if CONFIG.get('optimizations', {}).get('low_vram', True):
                 self.pipe.enable_model_cpu_offload()
@@ -88,7 +93,14 @@ class VisualPipeline:
         _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
+    def get_person_mask(self, frame):
+        """Returns a binary mask of the person in the frame."""
+        results = self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        condition = np.stack((results.segmentation_mask,) * 3, axis=-1) > 0.5
+        return condition.astype(np.uint8) * 255
+
     def process_frame(self, frame, ref_images, prompt, restore_face=True):
+        # 1. Generate replacement frame
         pil_frame = Image.fromarray(frame).resize((512, 512))
         canny_image = self.get_canny_image(pil_frame)
         
@@ -105,32 +117,39 @@ class VisualPipeline:
             guidance_scale=guidance_scale
         ).images[0]
         
-        res_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
+        transformed_frame = np.array(output.resize((frame.shape[1], frame.shape[0])))
+        
+        # 2. Masking pass: Blend transformed character back into original high-res background
+        mask = self.get_person_mask(frame)
+        # Smooth mask
+        mask = cv2.GaussianBlur(mask, (15, 15), 0)
+        mask_norm = mask.astype(float) / 255.0
+        
+        # Composite: (transformed * mask) + (original * (1-mask))
+        final_frame = (transformed_frame.astype(float) * mask_norm + 
+                       frame.astype(float) * (1.0 - mask_norm))
+        final_frame = final_frame.astype(np.uint8)
+        
         if restore_face:
-            res_frame = self.restore_faces(res_frame)
-        return res_frame
+            final_frame = self.restore_faces(final_frame)
+            
+        return final_frame
 
     def warp_frame(self, prev_transformed, prev_original, curr_original):
-        """Warps previous transformed frame to current frame using optical flow."""
         prev_gray = cv2.cvtColor(prev_original, cv2.COLOR_RGB2GRAY)
         curr_gray = cv2.cvtColor(curr_original, cv2.COLOR_RGB2GRAY)
-        
-        # Calculate optical flow
         flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        
         h, w = flow.shape[:2]
         flow[:,:,0] += np.arange(w)
         flow[:,:,1] += np.arange(h)[:,np.newaxis]
-        
         warped = cv2.remap(prev_transformed, flow, None, cv2.INTER_LINEAR)
         return warped
 
     def process_video(self, video_path, ref_image_paths, output_video_path, prompt="a person", restore_face=True, smooth=True):
-        """Processes video with optional temporal smoothing using optical flow."""
         if isinstance(ref_image_paths, str):
             ref_image_paths = [ref_image_paths]
             
-        logger.info(f"Processing video {video_path} with temporal smoothing: {smooth}")
+        logger.info(f"Processing video {video_path} with Masking & Temporal Smoothing...")
         clip = mp.VideoFileClip(video_path)
         ref_images = [Image.open(p).convert("RGB").resize((224, 224)) for p in ref_image_paths]
         
@@ -146,15 +165,10 @@ class VisualPipeline:
             if count / fps > test_duration:
                 break
             
-            # 1. Transform current frame
             curr_transformed = self.process_frame(frame, ref_images, prompt, restore_face=restore_face)
             
-            # 2. Apply temporal smoothing
             if smooth and prev_transformed is not None:
-                # Warp previous frame to match current motion
                 warped_prev = self.warp_frame(prev_transformed, prev_original, frame)
-                
-                # Blend (0.6 current, 0.4 warped previous)
                 curr_transformed = cv2.addWeighted(curr_transformed, 0.6, warped_prev, 0.4, 0)
             
             processed_frames.append(curr_transformed)
