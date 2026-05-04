@@ -4,7 +4,7 @@ A local, end-to-end pipeline for transforming video content using state-of-the-a
 
 ## Features
 - **Visual Character Replacement**: Uses **Stable Diffusion 1.5** with **ControlNet Canny** and **IP-Adapter Plus** to replace people in videos based on a reference image.
-- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces in every frame.
+- **High-Fidelity Visual Refinement**: Integrated **GFPGAN v1.4** to restore and sharpen faces in every frame (applied post-lipsync for maximum clarity).
 - **Audio Pipeline**: 
     - **Transcription**: Powered by `faster-whisper`.
     - **Translation**: Uses `MarianMT` (Opus-MT) models for high-quality local translation.
@@ -43,7 +43,7 @@ python3 app.py
 ```
 Then open `http://localhost:7860` in your browser.
 
-### Option 2: Docker (Easiest for setup)
+### Option 2: Docker
 Run the entire system in a container with all dependencies pre-configured.
 ```bash
 docker-compose up --build
@@ -59,6 +59,13 @@ python3 main.py --video samples/input_video.mp4 \
                 --ref_audio samples/ref_audio.flac \
                 --target_lang es \
                 --output transformation_result.mp4
+```
+
+### Option 4: Testing
+Run unit tests to verify pipeline integrity:
+```bash
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/
 ```
 
 ### Options
@@ -79,6 +86,7 @@ python3 main.py --video samples/input_video.mp4 \
 - `lipsync_pipeline.py`: Handles lip-syncing using Wav2Lip ONNX.
 - `models/`: Local storage for all ML weights.
 - `samples/`: Test assets.
+- `tests/`: Unit tests for the pipelines.
 
 ## Implementation Details
 - **Temporal Consistency**: Handled via ControlNet structure guidance at every frame.
