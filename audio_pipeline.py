@@ -70,13 +70,22 @@ class AudioPipeline:
         # 2. Transcribe source
         print("Transcribing source video...")
         source_text = self.transcribe_audio(temp_source_audio)
+        if not source_text or len(source_text.strip()) < 2:
+            print("No significant speech detected in source video.")
+            source_text = "Hello." # Default to avoid empty translation errors
         print(f"Source Text: {source_text}")
         
         # 3. Translate
         print(f"Translating to {target_lang}...")
         inputs = self.tokenizer(source_text, return_tensors="pt").to(self.device)
-        translated_tokens = self.translation_model.generate(**inputs)
+        translated_tokens = self.translation_model.generate(**inputs, max_length=128)
         translated_text = self.tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+        
+        # Simple deduplication for hallucinations
+        words = translated_text.split()
+        if len(words) > 5 and len(set(words)) == 1:
+            translated_text = words[0] # Fix "Tú, tú, tú" issue
+            
         print(f"Translated Text: {translated_text}")
         
         # 4. Zero-Shot TTS with F5-TTS

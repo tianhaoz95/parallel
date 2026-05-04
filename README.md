@@ -38,18 +38,19 @@ A local, end-to-end pipeline for transforming video content using state-of-the-a
    ```bash
    # See demo.py or main.py for details on model paths
    ```
-
 ## Usage
 
-### Run Full Transformation
+### Option 1: Web Interface (Recommended)
+A user-friendly Gradio web interface is provided for easier interaction.
 ```bash
 source .venv/bin/activate
-python3 main.py --video samples/input_video.mp4 \
-                --ref_image samples/ref_image.jpg \
-                --target_lang es \
-                --prompt "a portrait of a beautiful character" \
-                --output final_result.mp4
+python3 app.py
 ```
+Then open `http://localhost:7860` in your browser.
+
+### Option 2: CLI Tool
+For batch processing or automation:
+
 
 ### Options
 - `--video`: Path to the source MP4 video.
