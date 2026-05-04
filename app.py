@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsync, preserve_bg):
     if video is None or ref_image is None:
-        return "Error: Video and Reference Image are required."
+        return None, "Error: Video and Reference Image are required."
     
     output_path = "transformed_output.mp4"
     
@@ -33,11 +33,11 @@ def transform_video(video, ref_image, ref_audio, target_lang, prompt, skip_lipsy
         try:
             run_pipeline()
             if os.path.exists(output_path):
-                return output_path
+                return output_path, "SUCCESS: Transformation complete!"
             else:
-                return "Error: Transformation failed to generate output."
+                return None, "Error: Transformation failed to generate output."
         except Exception as e:
-            return f"Error during transformation: {str(e)}"
+            return None, f"Error during transformation: {str(e)}"
 
 # Define the UI
 with gr.Blocks(title="Video & Audio Transformer") as demo:
@@ -72,7 +72,7 @@ with gr.Blocks(title="Video & Audio Transformer") as demo:
     run_btn.click(
         fn=transform_video,
         inputs=[input_video, input_ref_image, input_ref_audio, target_lang, prompt, skip_lipsync, preserve_bg],
-        outputs=[output_video]
+        outputs=[output_video, status]
     )
 
 if __name__ == "__main__":
