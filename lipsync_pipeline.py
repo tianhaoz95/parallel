@@ -14,11 +14,23 @@ static_ffmpeg.add_paths()
 
 class LipsyncPipeline:
     def __init__(self, model_path="models/wav2lip_256.onnx", input_size=256):
+        import os
+        if os.environ.get("USE_CPU") == "1":
+            model_path = "models/wav2lip.onnx"
+            input_size = 96
+            logger.info("CPU Testing Mode active: falling back to 96x96 wav2lip model.")
+            
         self.input_size = input_size
         
         logger.info(f"Loading segment-aware Lipsync model from {model_path}...")
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        
+        # Optimize ORT for CPU if in test mode
+        sess_options = ort.SessionOptions()
+        if os.environ.get("USE_CPU") == "1":
+            sess_options.intra_op_num_threads = os.cpu_count() or 4
+            
+        self.session = ort.InferenceSession(model_path, sess_options=sess_options, providers=providers)
         
         self.mp_face_detection = mp.solutions.face_detection
         self.face_detector = self.mp_face_detection.FaceDetection(

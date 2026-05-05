@@ -31,32 +31,34 @@ class VisualPipeline:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         
-        logger.info(f"Initializing Visual Pipeline on {self.device}")
+        self.is_mock = os.environ.get("USE_CPU") == "1"
+        logger.info(f"Initializing Visual Pipeline on {self.device} (Mock Mode: {self.is_mock})")
         
-        self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
-        self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
-        self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
-            sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
-            torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
-        )
-        
-        self.use_lcm = CONFIG.get('defaults', {}).get('use_lcm', False)
-        if self.use_lcm:
-            self.pipe.load_lora_weights(CONFIG.get('optimizations', {}).get('lcm_lora'))
-            self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
-        else:
-            self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
+        if not self.is_mock:
+            self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(image_encoder_path, torch_dtype=self.dtype).to(self.device)
+            self.controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=self.dtype)
+            self.pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+                sd_model_path, controlnet=self.controlnet, image_encoder=self.image_encoder,
+                torch_dtype=self.dtype, safety_checker=None, feature_extractor=None
+            )
             
-        self.pipe.load_ip_adapter(os.path.join(ip_adapter_path, "models"), subfolder="", weight_name="ip-adapter-plus_sd15.bin")
-        self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
+            self.use_lcm = CONFIG.get('defaults', {}).get('use_lcm', False)
+            if self.use_lcm:
+                self.pipe.load_lora_weights(CONFIG.get('optimizations', {}).get('lcm_lora'))
+                self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
+            else:
+                self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
+                
+            self.pipe.load_ip_adapter(os.path.join(ip_adapter_path, "models"), subfolder="", weight_name="ip-adapter-plus_sd15.bin")
+            self.pipe.set_ip_adapter_scale(CONFIG.get('defaults', {}).get('ip_adapter_scale', 0.7))
+            if self.device == "cuda": self.pipe.enable_model_cpu_offload()
+            
+            self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
+            model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+            self.upscaler = RealESRGANer(scale=4, model_path='models/RealESRGAN_x4plus.pth', model=model, tile=400, tile_pad=10, pre_pad=0, half=True if self.device == "cuda" else False, device=self.device)
         
-        self.face_restorer = GFPGANer(model_path=CONFIG.get('models', {}).get('restoration', {}).get('gfpgan'), upscale=1, arch='clean', channel_multiplier=2, device=self.device)
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-        self.upscaler = RealESRGANer(scale=4, model_path='models/RealESRGAN_x4plus.pth', model=model, tile=400, tile_pad=10, pre_pad=0, half=True if self.device == "cuda" else False, device=self.device)
         self.segmenter = mp_lib.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
         self.vlm = VLMPrompter() if CONFIG.get('optimizations', {}).get('use_vlm', True) else None
-        
-        if self.device == "cuda": self.pipe.enable_model_cpu_offload()
 
     def consolidate_identity(self, image_paths):
         embeddings = []; valid_images = []
@@ -110,12 +112,27 @@ class VisualPipeline:
                 if dist < best_dist: best_dist = dist; matched_id = name
             
             if matched_id:
+                if getattr(self, 'is_mock', False):
+                    # Fast CPU Mocking: Apply Canny edge over the face and tint it
+                    face_bbox = face_data['facial_area']
+                    x, y, w, h = face_bbox['x'], face_bbox['y'], face_bbox['w'], face_bbox['h']
+                    face_roi = final_frame[y:y+h, x:x+w]
+                    if face_roi.size > 0:
+                        gray = cv2.cvtColor(face_roi, cv2.COLOR_RGB2GRAY)
+                        edges = cv2.Canny(gray, 100, 200)
+                        edges_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+                        # Tint green
+                        edges_rgb[:, :, 0] = 0
+                        edges_rgb[:, :, 2] = 0
+                        final_frame[y:y+h, x:x+w] = cv2.addWeighted(face_roi, 0.3, edges_rgb, 0.7, 0)
+                    continue
+
                 # Use Identity-specific prompt if available, else fallback to base
                 char_prompt = identity_map[matched_id].get('prompt', prompt_base)
                 
                 pil_frame = Image.fromarray(frame).resize((512, 512))
                 canny_image = self.get_canny_image(pil_frame)
-                num_steps = 4 if self.use_lcm else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
+                num_steps = 4 if getattr(self, 'use_lcm', False) else CONFIG.get('defaults', {}).get('num_inference_steps', 15)
                 
                 full_prompt = f"{char_prompt}, {matched_id}"
                 if hasattr(self, 'current_context') and self.current_context:

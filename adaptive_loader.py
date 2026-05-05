@@ -11,6 +11,18 @@ def get_gpu_memory():
 
 def get_optimal_config():
     """Returns an optimized configuration based on detected hardware."""
+    import os
+    if os.environ.get("USE_CPU") == "1":
+        logger.info("Hardware Class: CPU TESTING MODE. Using ultra-fast mock settings.")
+        return {
+            'whisper_model': 'tiny',
+            'sd_model': 'mock',
+            'use_inpainting': False,
+            'use_upscaling': False,
+            'low_vram': True,
+            'compute_type': 'float32'
+        }
+
     total_vram, _ = get_gpu_memory()
     logger.info(f"Detected {total_vram:.2f} GB of VRAM. Optimizing configuration...")
     

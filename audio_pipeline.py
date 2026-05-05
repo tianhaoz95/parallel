@@ -56,7 +56,9 @@ class AudioPipeline:
         self.asr_model = _load_asr_model(asr_model_path)
         self.model_prefix = translation_model_path_prefix
         self.use_llm = CONFIG.get('defaults', {}).get('use_llm_translation', False)
-        self.f5tts = F5TTS(device=self.device)
+        import os
+        self.is_mock = os.environ.get("USE_CPU") == "1"
+        self.f5tts = None if self.is_mock else F5TTS(device=self.device)
         self.speaker_identifier = SpeakerIdentification()
         self.emotion_analyzer = EmotionAnalyzer()
         if tts_model_path and tts_voices_path:
@@ -112,7 +114,7 @@ class AudioPipeline:
 
     def synthesize_segment(self, text, ref_audio_path, ref_text, output_path, emotion_tag="", speed=1.0):
         full_text = f"{emotion_tag} {text}" if emotion_tag else text
-        if ref_audio_path:
+        if ref_audio_path and self.f5tts:
             wav, sr, _ = self.f5tts.infer(ref_file=ref_audio_path, ref_text=ref_text, gen_text=full_text)
             sf.write(output_path, wav, sr)
         elif self.kokoro:
