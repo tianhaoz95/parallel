@@ -5,7 +5,7 @@ from lipsync_pipeline import LipsyncPipeline
 
 def test_lipsync_pipeline_init(mocker):
     mocker.patch('onnxruntime.InferenceSession')
-    mocker.patch('mediapipe.solutions.face_detection.FaceDetection')
+    mocker.patch('deepface.DeepFace.extract_faces')
     
     pipeline = LipsyncPipeline(model_path="dummy.onnx")
     assert pipeline is not None
@@ -15,24 +15,16 @@ def test_get_face_crop(mocker):
     # Skip init
     pipeline = LipsyncPipeline.__new__(LipsyncPipeline)
     
-    # Mock face detector
-    mock_detector = mocker.Mock()
-    pipeline.face_detector = mock_detector
-    
-    # Mock detection result
-    mock_results = mocker.Mock()
-    mock_results.detections = [mocker.Mock()]
-    mock_results.detections[0].location_data.relative_bounding_box.xmin = 0.1
-    mock_results.detections[0].location_data.relative_bounding_box.ymin = 0.1
-    mock_results.detections[0].location_data.relative_bounding_box.width = 0.5
-    mock_results.detections[0].location_data.relative_bounding_box.height = 0.5
-    
-    mock_detector.process.return_value = mock_results
+    mocker.patch('deepface.DeepFace.extract_faces', return_value=[{
+        'confidence': 0.9,
+        'facial_area': {'x': 10, 'y': 10, 'w': 50, 'h': 50}
+    }])
     
     dummy_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    coords = pipeline.get_face_crop(dummy_frame)
+    coords = pipeline.get_all_face_crops(dummy_frame)
     
     assert coords is not None
-    assert len(coords) == 4
+    assert len(coords) == 1
+    assert len(coords[0]['coords']) == 4
     # Check that coords are within frame boundaries
-    assert all(0 <= c <= 100 for c in coords)
+    assert all(0 <= c <= 100 for c in coords[0]['coords'])

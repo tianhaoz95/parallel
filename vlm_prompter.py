@@ -4,7 +4,7 @@ from PIL import Image
 from logger_utils import logger
 
 class VLMPrompter:
-    def __init__(self, model_id="models/moondream2"):
+    def __init__(self, model_id="vikhyatk/moondream2"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Loading local VLM for contextual prompting ({model_id}) on {self.device}...")
         

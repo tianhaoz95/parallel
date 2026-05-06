@@ -126,6 +126,18 @@ class AudioPipeline:
         logger.info(f"Processing audio for {video_path}")
         video = mp.VideoFileClip(video_path)
         temp_source_audio = "temp_source.wav"
+        
+        if video.audio is None:
+            logger.warning("No audio track found in the input video. Generating silent audio.")
+            import numpy as np
+            import soundfile as sf
+            sr = 24000
+            # Add tiny noise to avoid loudnorm -inf crash
+            samples = np.random.normal(0, 1e-6, (int(video.duration * sr), 2)).astype(np.float32)
+            sf.write(output_audio_path, samples, sr)
+            video.close()
+            return output_audio_path, []
+            
         video.audio.write_audiofile(temp_source_audio, logger=None)
         
         vocal_track = temp_source_audio

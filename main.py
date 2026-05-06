@@ -23,14 +23,21 @@ def generate_comparison(input_video, transformed_video, output_path):
 
 def normalize_audio(video_path, output_path):
     logger.info(f"Normalizing audio loudness for {video_path}...")
-    cmd = f"ffmpeg-normalize {video_path} -o {output_path} -c:a aac -b:a 192k --force"
-    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    import sys
+    import os
+    import imageio_ffmpeg
+    env = os.environ.copy()
+    env["FFMPEG_PATH"] = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = f"{sys.executable} -m ffmpeg_normalize {video_path} -o {output_path} -c:a aac -b:a 192k --force"
+    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
 def burn_subtitles(video_path, srt_path, output_path):
     logger.info(f"Burning subtitles into {video_path}...")
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     escaped_srt = srt_path.replace("\\", "/").replace(":", "\\:")
-    cmd = f'ffmpeg -y -i "{video_path}" -vf "subtitles={escaped_srt}" -c:a copy "{output_path}"'
-    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = [ffmpeg_exe, "-y", "-i", video_path, "-vf", f"subtitles={escaped_srt}", "-c:a", "copy", output_path]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def main():
     _ = HardwareAdaptiveLoader.apply_optimizations()
@@ -109,7 +116,7 @@ def main():
         FacialExpressionPipeline().retarget_expressions(current_video, list(visual_map.values())[0][0], temp_exp)
         current_video = temp_exp
 
-    if not args.skip_lipsync:
+    if not args.skip_lipsync and segments:
         logger.info("--- Phase 4: Targeted Lipsync ---")
         for s in segments:
             char_name = f"Character_{s['speaker_id']}"
@@ -117,22 +124,28 @@ def main():
         temp_synced = "temp_synced.mp4"
         LipsyncPipeline().process_video_segmented(current_video, translated_audio, temp_synced, segments)
         current_video = temp_synced
+    elif not args.skip_lipsync:
+        logger.info("--- Phase 4: Targeted Lipsync (Skipped: No speaker segments) ---")
 
     # 4. Final Mastering
     logger.info("--- Phase 5: Final Mastering ---")
     mastered_temp = "temp_mastered_no_audio.mp4"
     cap = cv2.VideoCapture(current_video)
     fps = cap.get(cv2.CAP_PROP_FPS); width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(mastered_temp, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    import imageio
+    writer = imageio.get_writer(mastered_temp, fps=fps, codec='libx264', quality=8)
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
         restored = visual_pipe.restore_faces(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        out.write(cv2.cvtColor(restored, cv2.COLOR_RGB2BGR))
-    cap.release(); out.release()
+        writer.append_data(restored)
+    cap.release(); writer.close()
     
     final_merged = "temp_final_merged.mp4"
-    os.system(f"ffmpeg -y -i {mastered_temp} -i {translated_audio} -c:v copy -c:a aac -shortest {final_merged} > /dev/null 2>&1")
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [ffmpeg_exe, "-y", "-i", mastered_temp, "-i", translated_audio, "-c:v", "copy", "-c:a", "aac", "-shortest", final_merged]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     current_final = final_merged
     if args.subtitles and os.path.exists("temp_subtitles.srt"):

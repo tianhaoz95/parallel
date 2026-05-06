@@ -119,7 +119,8 @@ mediapipe
 
 ml_dtypes
 more-itertools
-moviepy
+deepface
+moviepy==1.0.3
 mpmath
 msgpack
 multidict

@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import mediapipe as mp
+
 import onnxruntime as ort
 import librosa
 import os
@@ -14,12 +14,7 @@ static_ffmpeg.add_paths()
 
 class LipsyncPipeline:
     def __init__(self, model_path="models/wav2lip_256.onnx", input_size=256):
-        import os
-        if os.environ.get("USE_CPU") == "1":
-            model_path = "models/wav2lip.onnx"
-            input_size = 96
-            logger.info("CPU Testing Mode active: falling back to 96x96 wav2lip model.")
-            
+
         self.input_size = input_size
         
         logger.info(f"Loading segment-aware Lipsync model from {model_path}...")
@@ -31,23 +26,25 @@ class LipsyncPipeline:
             sess_options.intra_op_num_threads = os.cpu_count() or 4
             
         self.session = ort.InferenceSession(model_path, sess_options=sess_options, providers=providers)
-        
-        self.mp_face_detection = mp.solutions.face_detection
-        self.face_detector = self.mp_face_detection.FaceDetection(
-            model_selection=1, min_detection_confidence=0.5
-        )
 
     def get_all_face_crops(self, frame):
-        results = self.face_detector.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        try:
+            results = DeepFace.extract_faces(frame, detector_backend='opencv', enforce_detection=False)
+        except Exception:
+            return []
+            
         face_data = []
-        if not results.detections: return face_data
-        
         h, w, _ = frame.shape
-        for detection in results.detections:
-            bbox = detection.location_data.relative_bounding_box
-            x1, y1 = int(bbox.xmin * w), int(bbox.ymin * h)
-            x2, y2 = x1 + int(bbox.width * w), y1 + int(bbox.height * h)
-            padding_h = int((y2 - y1) * 0.2); padding_w = int((x2 - x1) * 0.1)
+        for result in results:
+            if result.get('confidence', 1.0) < 0.5:
+                continue
+            bbox = result['facial_area']
+            x1, y1 = bbox['x'], bbox['y']
+            width, height = bbox['w'], bbox['h']
+            x2, y2 = x1 + width, y1 + height
+            
+            padding_h = int(height * 0.2)
+            padding_w = int(width * 0.1)
             x1_p, y1_p = max(0, x1 - padding_w), max(0, y1 - padding_h)
             x2_p, y2_p = min(w, x2 + padding_w), min(h, y2 + padding_h)
             
@@ -83,7 +80,8 @@ class LipsyncPipeline:
             
         mel_chunks = self.preprocess_audio(audio_path, fps)
         temp_video = "temp_segmented_sync.mp4"
-        out = cv2.VideoWriter(temp_video, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        import imageio
+        writer = imageio.get_writer(temp_video, fps=fps, codec='libx264', quality=8)
         
         input_names = [inp.name for inp in self.session.get_inputs()]
         
@@ -103,12 +101,12 @@ class LipsyncPipeline:
             
             if target_emb is None:
                 # No one speaking, or no target mapped
-                out.write(frame); frame_idx += 1; continue
+                writer.append_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); frame_idx += 1; continue
                 
             # 1. Find all faces
             faces = self.get_all_face_crops(frame)
             if not faces:
-                out.write(frame); frame_idx += 1; continue
+                writer.append_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); frame_idx += 1; continue
             
             # 2. Identify target face
             target_face = None
@@ -120,7 +118,7 @@ class LipsyncPipeline:
                 except: continue
             
             if target_face is None:
-                out.write(frame); frame_idx += 1; continue
+                writer.append_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)); frame_idx += 1; continue
                 
             # 3. Perform Sync on target
             x1, y1, x2, y2 = target_face['coords']
@@ -134,11 +132,25 @@ class LipsyncPipeline:
             pred = cv2.resize(pred.astype(np.uint8), (x2-x1, y2-y1))
             
             frame[y1:y2, x1:x2] = pred
-            out.write(frame)
+            writer.append_data(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             frame_idx += 1
             
-        cap.release(); out.release()
-        os.system(f"ffmpeg -y -i {temp_video} -i {audio_path} -c:v libx264 -c:a aac -shortest {output_path} > /dev/null 2>&1")
+        cap.release(); writer.close()
+        import os
+        if not os.path.exists(temp_video):
+            logger.error(f"Internal error: {temp_video} was not created!")
+        else:
+            logger.info(f"Internal video created: {temp_video} ({os.path.getsize(temp_video)} bytes)")
+            
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        cmd = [ffmpeg_exe, "-y", "-i", temp_video, "-i", audio_path, "-c:v", "libx264", "-c:a", "aac", "-shortest", output_path]
+        import subprocess
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg merge failed: {e.stderr}")
+            raise
         if os.path.exists(temp_video): os.remove(temp_video)
         return output_path
 

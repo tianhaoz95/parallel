@@ -151,7 +151,7 @@ with gr.Blocks(title="AI Video Studio", theme=gr.themes.Soft()) as demo:
                     with gr.Row():
                         use_lcm = gr.Checkbox(label="🚀 Fast Mode", value=False); smooth = gr.Checkbox(label="✨ Smooth", value=True)
                         preserve_bg = gr.Checkbox(label="Preserve BGM", value=True); show_comp = gr.Checkbox(label="🎥 Comparison", value=True)
-                        use_cpu = gr.Checkbox(label="🖥️ CPU Testing Mode", value=False)
+                        use_cpu = gr.Checkbox(label="🖥️ CPU Testing Mode", value=os.environ.get("USE_CPU") == "1")
                     run_btn = gr.Button("🚀 Start Production", variant="primary", size="lg")
                 with gr.Column(scale=1):
                     out_v = gr.Video(label="Result"); comp_v = gr.Video(label="Side-by-Side"); stat = gr.Textbox(label="Status")

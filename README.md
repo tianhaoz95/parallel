@@ -20,6 +20,62 @@ A professional-grade, local, end-to-end pipeline for transforming video content 
 
 ---
 
+## ⚙️ Environment Setup
+
+### 1. System Dependencies
+Before installing Python packages, ensure your system has the necessary drivers and utilities:
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt update
+sudo apt install -y git ffmpeg wget python3.12-venv
+```
+
+**Windows:**
+- Install [Git for Windows](https://git-scm.com/download/win).
+- Install [Python 3.12](https://www.python.org/downloads/).
+- Install [FFmpeg](https://ffmpeg.org/download.html) and add it to your PATH.
+- Install [NVIDIA CUDA Toolkit 12.1](https://developer.nvidia.com/cuda-12-1-0-download-archive).
+
+### 2. Manual Installation
+We recommend using a virtual environment to manage dependencies.
+
+**Step-by-Step:**
+1. **Clone the repository:**
+   ```bash
+   git clone <repo-url>
+   cd parallel
+   ```
+2. **Initialize Environment:**
+   - **Linux:** Run `./setup.sh`
+   - **Windows:** Run `setup.bat`
+   
+   *This will automatically create a `.venv`, install all dependencies from `requirements.txt`, and download the required ML models (~15GB).*
+
+3. **Manual Dependency Install (Alternative):**
+   If you prefer to run steps manually:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   python download_models.py
+   ```
+
+### 3. Docker Installation (Containerized)
+If you prefer to avoid local dependency hell, use Docker:
+```bash
+# Ensure NVIDIA Container Toolkit is installed
+docker-compose up --build
+```
+
+### 4. Verification
+Check if your GPU is correctly detected by the studio:
+```bash
+python check_gpu.py
+```
+
+---
+
 ## 🚀 Quick Start (Linux/WSL)
 
 1. **Clone & Setup**:
@@ -101,10 +157,37 @@ python3 main.py --video input.mp4 \
 
 ---
 
-## 🧪 Testing & Engineering
-- **Unit Tests**: `make test`
-- **Benchmarking**: `make benchmark`
-- **Containerization**: `docker-compose up --build`
+## 🧪 Testing & Benchmarking
+
+### 1. Hardware Verification
+Run the verification script to ensure your GPU and VRAM are sufficient:
+```bash
+python check_gpu.py
+```
+
+### 2. Performance Benchmark
+Measure the processing speed of your system (Audio, Visual, and Lipsync components):
+```bash
+make benchmark
+```
+
+### 3. CPU-Only Testing Mode
+If you don't have an NVIDIA GPU, you can run in CPU mode for logic testing:
+```bash
+export USE_CPU=1  # Windows: set USE_CPU=1
+python app.py
+```
+
+---
+
+## 🛠 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| **CUDA Errors** | Ensure NVIDIA drivers are installed and `nvcc --version` shows 12.1+. |
+| **Out of Memory (OOM)** | Close other GPU apps. Set `fast_mode: true` in `config.yaml`. |
+| **Model Download Fail** | Ensure `huggingface-cli` is installed: `pip install huggingface_hub[cli]`. |
+| **FFmpeg Not Found** | Ensure FFmpeg is in your PATH. Run `ffmpeg -version` to verify. |
 
 ---
 

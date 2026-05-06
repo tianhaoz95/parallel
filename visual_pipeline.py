@@ -57,7 +57,18 @@ class VisualPipeline:
             model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
             self.upscaler = RealESRGANer(scale=4, model_path='models/RealESRGAN_x4plus.pth', model=model, tile=400, tile_pad=10, pre_pad=0, half=True if self.device == "cuda" else False, device=self.device)
         
-        self.segmenter = mp_lib.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+        import urllib.request
+        model_path = 'models/selfie_segmenter.tflite'
+        if not os.path.exists(model_path):
+            os.makedirs('models', exist_ok=True)
+            logger.info("Downloading Mediapipe Selfie Segmenter model...")
+            urllib.request.urlretrieve('https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite', model_path)
+            
+        options = mp_lib.tasks.vision.ImageSegmenterOptions(
+            base_options=mp_lib.tasks.BaseOptions(model_asset_path=model_path),
+            running_mode=mp_lib.tasks.vision.RunningMode.IMAGE,
+            output_category_mask=True)
+        self.segmenter = mp_lib.tasks.vision.ImageSegmenter.create_from_options(options)
         self.vlm = VLMPrompter() if CONFIG.get('optimizations', {}).get('use_vlm', True) else None
 
     def consolidate_identity(self, image_paths):
@@ -78,6 +89,7 @@ class VisualPipeline:
         return Image.fromarray(image)
 
     def restore_faces(self, frame):
+        if getattr(self, 'is_mock', False): return frame
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         _, _, restored_img = self.face_restorer.enhance(frame_bgr, has_aligned=False, only_center_face=False, paste_back=True)
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
@@ -148,7 +160,9 @@ class VisualPipeline:
                 
                 transformed_full = np.array(output.resize((frame.shape[1], frame.shape[0])))
                 transformed_matched = self.match_skin_tone(transformed_full, frame)
-                mask = (self.segmenter.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).segmentation_mask > 0.5).astype(np.uint8) * 255
+                mp_image = mp_lib.Image(image_format=mp_lib.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                seg_result = self.segmenter.segment(mp_image)
+                mask = (seg_result.category_mask.numpy_view() > 0.5).astype(np.uint8) * 255
                 mask_norm = cv2.GaussianBlur(mask, (15, 15), 0).astype(float) / 255.0
                 if mask_norm.ndim == 2: mask_norm = np.stack([mask_norm]*3, axis=-1)
                 final_frame = (transformed_matched.astype(float) * mask_norm + final_frame.astype(float) * (1.0 - mask_norm)).astype(np.uint8)
@@ -175,7 +189,7 @@ class VisualPipeline:
         fps = clip.fps; out_w, out_h = (clip.w * 2, clip.h * 2) if upscale else (clip.w, clip.h)
         out = cv2.VideoWriter("temp_streaming.mp4", cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
         
-        test_duration = min(clip.duration, 1.0); count = 0; prev_frame = None
+        test_duration = min(clip.duration, 5.0) if os.environ.get("USE_CPU") == "1" else clip.duration; count = 0; prev_frame = None
         self.current_context = ""
         try:
             for frame in clip.iter_frames():

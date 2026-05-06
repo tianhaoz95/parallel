@@ -19,6 +19,7 @@ def get_optimal_config():
             'sd_model': 'mock',
             'use_inpainting': False,
             'use_upscaling': False,
+            'use_vlm': False,
             'low_vram': True,
             'compute_type': 'float32'
         }
@@ -75,6 +76,8 @@ class HardwareAdaptiveLoader:
         CONFIG['models']['asr'] = f"Systran/faster-whisper-{opt['whisper_model']}"
         CONFIG['defaults']['preserve_bg'] = opt['use_inpainting']
         CONFIG['optimizations']['low_vram'] = opt['low_vram']
+        if 'use_vlm' in opt:
+            CONFIG['optimizations']['use_vlm'] = opt['use_vlm']
         
         # Update internal defaults for main.py
         return opt
