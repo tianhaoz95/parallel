@@ -16,3 +16,5 @@ temp_*
 projects/
 transformation_history.json
 *.log
+/sample
+.DS_Store

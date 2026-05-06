@@ -72,6 +72,7 @@ class IdentityDiscoverer:
                             else:
                                 logger.info(f"New identity found: ID {id_num}")
                 except Exception as e:
+                    logger.error(f"Error in identity discovery: {str(e)}")
                     pass
             
             frame_count += 1
